@@ -60,8 +60,8 @@ on **COM3** (Prolific PL2303GC cable). Reference software: Hytera CPS V1.5.24.00
   remove-channel reproduce CPS's recorded files byte for byte (`tests/workspace_structure.rs`). `Workspace`
   keeps an edit form (for `apply_edits`) and a decoded view of the result. Not offered: adding/removing zones and
   contacts (not recorded from CPS).
-- Next: owner review of GUI milestones 1 and 2; GUI milestone 2 (add/remove channels, zone
-  members; reference names). Later: recordings of deleting a contact / zone / scan-listed channel.
+- Next: owner review of GUI milestones 1 and 2. Later: recordings of deleting a contact / zone / scan-listed
+  channel.
 
 ## Code
 
