@@ -1,0 +1,531 @@
+//! An opened configuration folder with pending edits, as used by the GUI.
+//!
+//! Every edit is applied to a working copy of the decoded files and immediately run through
+//! [`apply_edits`] (the same validation and encoding as `hyt apply`); an edit that fails is not
+//! kept. Channels can be added and removed and zone members added, removed and moved; other
+//! records only change values (adding/removing them has not been checked against CPS).
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, anyhow, bail};
+use hytera_codeplug::decode::{DecodedBlock, DecodedFile, Fields, Record, decode};
+use hytera_codeplug::layout::{FieldDef, FieldType, Layout};
+use hytera_codeplug::options::Options;
+use hytera_codeplug::rcdb::{RcdbRoot, TableLink};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use crate::edit::{Change, Edited, apply_edits, def_for, is_text};
+use crate::view::{Labeler, is_secret};
+use crate::{ReadManifest, SavedRead, decode_read, load_options, load_read, save_edited};
+
+/// Where one field value lives in the decoded files.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldRef {
+    pub file: u16,
+    pub block: u16,
+    /// 0-based position of the record in its block.
+    pub record: usize,
+    /// 0-based member position, for two-level records (zones).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member: Option<usize>,
+    /// Field key as in [`hytera_codeplug::decode::keys`].
+    pub key: String,
+}
+
+impl FieldRef {
+    /// The field of `change` (positions are `[record]` or `[record.member]`, 1-based).
+    pub fn of_change(change: &Change) -> Option<FieldRef> {
+        let inner = change.position.strip_prefix('[')?.strip_suffix(']')?;
+        let (record, member) = match inner.split_once('.') {
+            Some((r, m)) => (r.parse::<usize>().ok()?, Some(m.parse::<usize>().ok()?.checked_sub(1)?)),
+            None => (inner.parse::<usize>().ok()?, None),
+        };
+        Some(FieldRef {
+            file: change.file_id,
+            block: change.block_id,
+            record: record.checked_sub(1)?,
+            member,
+            key: change.key.clone(),
+        })
+    }
+}
+
+/// The field map that `at` points into.
+pub fn fields_at<'a>(files: &'a [DecodedFile], at: &FieldRef) -> Option<&'a Map<String, Value>> {
+    let block = files.iter().find(|f| f.id == at.file)?.blocks.iter().find(|b| b.id == at.block)?;
+    let record = block.records.get(at.record)?;
+    match at.member {
+        None => record.fields.as_ref().map(|f| &f.0),
+        Some(m) => record.members.as_ref()?.get(m).map(|f| &f.0),
+    }
+}
+
+fn fields_at_mut<'a>(files: &'a mut [DecodedFile], at: &FieldRef) -> Option<&'a mut Map<String, Value>> {
+    let block = files.iter_mut().find(|f| f.id == at.file)?.blocks.iter_mut().find(|b| b.id == at.block)?;
+    let record = block.records.get_mut(at.record)?;
+    match at.member {
+        None => record.fields.as_mut().map(|f| &mut f.0),
+        Some(m) => record.members.as_mut()?.get_mut(m).map(|f| &mut f.0),
+    }
+}
+
+/// The value at `at`.
+pub fn value_at<'a>(files: &'a [DecodedFile], at: &FieldRef) -> Option<&'a Value> {
+    fields_at(files, at)?.get(&at.key)
+}
+
+/// Whether the GUI may edit a field of this definition holding `value`: single numbers and clean
+/// text, but never passwords, reserved bytes, lists, floats or raw byte strings.
+pub fn is_editable(def: &FieldDef, key: &str, value: &Value) -> bool {
+    if is_secret(key) || key.starts_with("Reserved") {
+        return false;
+    }
+    match value {
+        Value::String(_) => is_text(def),
+        Value::Number(n) => n.is_i64() && !is_text(def) && def.kind != FieldType::Float,
+        _ => false,
+    }
+}
+
+/// Convert what the user typed into the raw JSON value for field `def`, with the checks of
+/// `hyt apply` (option catalogue choices, ranges and step grid; text length and characters).
+pub fn parse_input(def: &FieldDef, key: &str, options: Option<&Options>, text: &str) -> Result<Value> {
+    if is_secret(key) {
+        bail!("{key}: programming passwords cannot be shown or edited here");
+    }
+    if is_text(def) {
+        let units = text.encode_utf16().count();
+        if units > def.length {
+            bail!("{key}: at most {} characters ({units} given)", def.length);
+        }
+        if text.chars().any(char::is_control) {
+            bail!("{key}: control characters are not allowed");
+        }
+        if def.kind == FieldType::AsciiString && !text.chars().all(|c| (' '..='~').contains(&c)) {
+            bail!("{key}: only plain ASCII characters are allowed");
+        }
+        return Ok(Value::String(text.to_string()));
+    }
+    let text = text.trim();
+    let raw = match options.and_then(|o| o.parse_display(def.id, text)) {
+        Some(raw) => raw,
+        None => match text.parse::<i64>() {
+            // A bare number is taken as raw only when the catalogue has no display rule for the
+            // field; otherwise "12.5" vs raw 12 would be ambiguous.
+            Ok(raw) if options.and_then(|o| o.param(def.id)).is_none_or(|p| p.choices.is_empty() && p.scales.is_empty()) => raw,
+            _ => {
+                let allowed = options.map_or("a raw number (no option catalogue loaded)".into(), |o| o.describe_allowed(def.id));
+                bail!("{key}: {text:?} is not a valid value; allowed: {allowed}");
+            }
+        },
+    };
+    if let Some(o) = options
+        && o.allows(def.id, raw) == Some(false)
+    {
+        bail!("{key}: {text:?} is not allowed; allowed: {}", o.describe_allowed(def.id));
+    }
+    Ok(Value::from(raw))
+}
+
+/// A channel list that the GUI can add to and remove from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelKind {
+    Digital,
+    Analog,
+}
+
+impl ChannelKind {
+    /// File holding the list.
+    pub fn file(self) -> &'static str {
+        match self {
+            ChannelKind::Digital => "QEU_C_DChannel",
+            ChannelKind::Analog => "QEU_C_AChannel",
+        }
+    }
+
+    /// Zone member `Channel Type` value for this list.
+    pub fn member_type(self) -> i64 {
+        match self {
+            ChannelKind::Digital => 0,
+            ChannelKind::Analog => 1,
+        }
+    }
+
+    pub fn from_member_type(t: i64) -> Option<Self> {
+        match t {
+            0 => Some(ChannelKind::Digital),
+            1 => Some(ChannelKind::Analog),
+            _ => None,
+        }
+    }
+}
+
+const ZONE_FILE: &str = "QEU_C_Zone";
+
+/// (`Channel Type`, `Channel List`) of a zone member.
+fn member(m: &Fields) -> Option<(i64, i64)> {
+    Some((m.0.get("Channel Type")?.as_i64()?, m.0.get("Channel List")?.as_i64()?))
+}
+
+/// An opened folder and its pending edits.
+///
+/// Two forms of the configuration are kept. The *edit form* ([`Workspace::edit_form`]) is what
+/// [`apply_edits`] takes (and `hyt apply` reads from JSON): records keep the `index` of the record
+/// they came from (added ones have none) and zone members use the channel numbering of the opened
+/// folder, with added channels numbered after it. The *view* ([`Workspace::view`]) is the result,
+/// decoded, as it will be written. Record and zone member positions are the same in both, so
+/// positions in the view also address the edit form.
+pub struct Workspace {
+    pub folder: PathBuf,
+    pub saved: SavedRead,
+    pub layout: Layout,
+    pub options: Option<Options>,
+    /// Why no option catalogue is loaded, when it is not.
+    pub options_note: Option<String>,
+    links: Vec<TableLink>,
+    base: Vec<DecodedFile>,
+    working: Vec<DecodedFile>,
+    view: Vec<DecodedFile>,
+    /// Result of applying the edit form, when it differs from the folder.
+    pending: Option<Edited>,
+}
+
+impl Workspace {
+    /// Open a folder saved by `hyt read` (or by [`Workspace::save_as`]), loading the layout from
+    /// `rcdb` and the option catalogue from `options_path` or its default location.
+    pub fn open(folder: &Path, rcdb: &RcdbRoot, options_path: Option<&Path>) -> Result<Self> {
+        let saved = load_read(folder)?;
+        let version = saved.manifest.rcdb_version.clone();
+        let layout = crate::load_layout(&saved, rcdb)?;
+        let links = rcdb.table_links().context("loading TableLink.xml")?;
+        let (options, options_note) = match load_options(options_path, &version) {
+            Ok(o) => (Some(o), None),
+            Err(note) => (None, Some(note)),
+        };
+        let base = decode_read(&saved, &layout)?;
+        Ok(Workspace {
+            folder: folder.to_path_buf(),
+            saved,
+            layout,
+            options,
+            options_note,
+            links,
+            working: base.clone(),
+            view: base.clone(),
+            base,
+            pending: None,
+        })
+    }
+
+    pub fn labeler(&self) -> Labeler<'_> {
+        Labeler { layout: &self.layout, options: self.options.as_ref() }
+    }
+
+    pub fn manifest(&self) -> &ReadManifest {
+        &self.saved.manifest
+    }
+
+    /// Decoded files as saved in the folder.
+    pub fn base(&self) -> &[DecodedFile] {
+        &self.base
+    }
+
+    /// The configuration including pending edits, decoded (what will be saved or written).
+    pub fn view(&self) -> &[DecodedFile] {
+        &self.view
+    }
+
+    /// Pending edits in [`apply_edits`]'s form (see the type's documentation).
+    pub fn edit_form(&self) -> &[DecodedFile] {
+        &self.working
+    }
+
+    /// Pending changes (as `hyt apply` reports them).
+    pub fn changes(&self) -> &[Change] {
+        self.pending.as_ref().map_or(&[], |(_, c)| c.as_slice())
+    }
+
+    pub fn has_changes(&self) -> bool {
+        !self.changes().is_empty()
+    }
+
+    /// All files including pending edits, ready to save or write.
+    pub fn files(&self) -> &BTreeMap<u16, Vec<u8>> {
+        self.pending.as_ref().map_or(&self.saved.files, |(f, _)| f)
+    }
+
+    pub fn def(&self, at: &FieldRef) -> Option<&FieldDef> {
+        def_for(&self.layout, at.file, at.block, &at.key)
+    }
+
+    fn file_name(&self, id: u16) -> Option<&str> {
+        self.base.iter().find(|f| f.id == id).map(|f| f.name.as_str())
+    }
+
+    /// The index in the opened folder of the record at view position `record`, or `None` for a
+    /// record added since.
+    pub fn original_index(&self, file: u16, block: u16, record: usize) -> Option<usize> {
+        let b = self.working.iter().find(|f| f.id == file)?.blocks.iter().find(|b| b.id == block)?;
+        b.records.get(record)?.index
+    }
+
+    /// Value of the field at `at` (a view position) in the opened folder; `None` for added
+    /// records.
+    pub fn original_value(&self, at: &FieldRef) -> Option<&Value> {
+        let index = self.original_index(at.file, at.block, at.record)?;
+        value_at(&self.base, &FieldRef { record: index, ..at.clone() })
+    }
+
+    /// Reference choices for the field at `at`, if it refers to another list.
+    pub fn reference_choices(&self, at: &FieldRef) -> Option<Vec<(i64, String)>> {
+        let file = self.file_name(at.file)?;
+        let record = fields_at(&self.view, &FieldRef { member: None, ..at.clone() })?;
+        crate::refs::choices(&self.view, file, &at.key, record)
+    }
+
+    /// Set the field at `at` (a view position, not a zone member) from user input: display text
+    /// such as `"444.725"` or `"High"`, a referenced record's name, or a raw number where the
+    /// catalogue knows nothing. On error nothing changes.
+    pub fn set_value(&mut self, at: &FieldRef, text: &str) -> Result<()> {
+        if at.member.is_some() {
+            bail!("zone members are changed with the member actions (add, remove, move)");
+        }
+        let def = self.def(at).ok_or_else(|| anyhow!("file {} block {}: unknown field {:?}", at.file, at.block, at.key))?;
+        let current = value_at(&self.view, at).ok_or_else(|| anyhow!("no field {:?} at that position", at.key))?;
+        if !is_editable(def, &at.key, current) {
+            bail!("{} cannot be edited here", at.key);
+        }
+        let value = match self.reference_choices(at).and_then(|c| crate::refs::parse(&c, text)) {
+            Some(raw) => Value::from(raw),
+            None => parse_input(def, &at.key, self.options.as_ref(), text)?,
+        };
+        self.set_raw(at, value)
+    }
+
+    /// Undo the pending change of one field of a record that exists in the opened folder.
+    pub fn revert(&mut self, at: &FieldRef) -> Result<()> {
+        let original = self
+            .original_value(at)
+            .ok_or_else(|| anyhow!("this record was added; remove it instead of reverting"))?
+            .clone();
+        self.set_raw(at, original)
+    }
+
+    fn set_raw(&mut self, at: &FieldRef, value: Value) -> Result<()> {
+        self.update(|w| {
+            let map = fields_at_mut(w, at).ok_or_else(|| anyhow!("no record at that position"))?;
+            map.insert(at.key.clone(), value);
+            Ok(())
+        })
+    }
+
+    /// Drop all pending edits.
+    pub fn discard(&mut self) {
+        self.working = self.base.clone();
+        self.view = self.base.clone();
+        self.pending = None;
+    }
+
+    /// Change a copy of the edit form with `f`, apply it ([`apply_edits`]) and keep it only if
+    /// that succeeds.
+    fn update(&mut self, f: impl FnOnce(&mut Vec<DecodedFile>) -> Result<()>) -> Result<()> {
+        let mut working = self.working.clone();
+        f(&mut working)?;
+        if working == self.working {
+            return Ok(());
+        }
+        let edits: Vec<DecodedFile> =
+            working.iter().zip(&self.base).filter(|(w, b)| w != b).map(|(w, _)| w.clone()).collect();
+        let pending = if edits.is_empty() {
+            None
+        } else {
+            let (files, changes) = apply_edits(&self.saved, &self.layout, self.options.as_ref(), &self.links, edits)?;
+            (!changes.is_empty()).then_some((files, changes))
+        };
+        let view = match &pending {
+            None => self.base.clone(),
+            Some((files, _)) => self
+                .base
+                .iter()
+                .map(|b| match files.get(&b.id) {
+                    Some(bytes) if self.saved.files.get(&b.id) != Some(bytes) => decode(bytes, &b.name, &self.layout),
+                    _ => Ok(b.clone()),
+                })
+                .collect::<hytera_codeplug::Result<Vec<_>>>()?,
+        };
+        self.working = working;
+        self.view = view;
+        self.pending = pending;
+        Ok(())
+    }
+
+    fn channel_block(files: &[DecodedFile], kind: ChannelKind) -> Result<&DecodedBlock> {
+        files
+            .iter()
+            .find(|f| f.name == kind.file())
+            .and_then(|f| f.blocks.first())
+            .with_context(|| format!("this configuration has no {}", kind.file()))
+    }
+
+    /// Number of channels of `kind` in the view.
+    pub fn channel_count(&self, kind: ChannelKind) -> usize {
+        Self::channel_block(&self.view, kind).map_or(0, |b| b.records.len())
+    }
+
+    /// Edit-form numbers (the opened folder's numbering, added channels after it) of the channels
+    /// at each view position.
+    fn edit_numbers(&self, kind: ChannelKind) -> Result<Vec<i64>> {
+        let base_count = Self::channel_block(&self.base, kind)?.records.len() as i64;
+        let mut added = 0;
+        Ok(Self::channel_block(&self.working, kind)?
+            .records
+            .iter()
+            .map(|r| match r.index {
+                Some(i) => i as i64 + 1,
+                None => {
+                    added += 1;
+                    base_count + added
+                }
+            })
+            .collect())
+    }
+
+    /// Append a channel, starting from CPS's template for that list (as CPS does). Returns its
+    /// view position.
+    pub fn add_channel(&mut self, kind: ChannelKind) -> Result<usize> {
+        let block = Self::channel_block(&self.working, kind)?;
+        if block.records.len() >= usize::from(block.capacity) {
+            bail!("the radio holds at most {} {kind:?} channels", block.capacity);
+        }
+        let position = block.records.len();
+        self.update(|w| {
+            let file = w.iter_mut().find(|f| f.name == kind.file()).context("no channel list")?;
+            file.blocks[0].records.push(Record { index: None, fields: Some(Fields(Map::new())), members: None });
+            Ok(())
+        })?;
+        Ok(position)
+    }
+
+    /// Remove the channel at view position `position`. Zone members pointing to it are removed and
+    /// later channels renumbered, as CPS does; other references to an affected channel make this
+    /// fail (see [`apply_edits`]).
+    pub fn remove_channel(&mut self, kind: ChannelKind, position: usize) -> Result<()> {
+        let numbers = self.edit_numbers(kind)?;
+        let removed = *numbers.get(position).with_context(|| format!("there is no {kind:?} channel {}", position + 1))?;
+        let base_count = Self::channel_block(&self.base, kind)?.records.len() as i64;
+        let was_added = removed > base_count;
+        let t = kind.member_type();
+        self.update(|w| {
+            let file = w.iter_mut().find(|f| f.name == kind.file()).context("no channel list")?;
+            file.blocks[0].records.remove(position);
+            let zones = w.iter_mut().filter(|f| f.name == ZONE_FILE).flat_map(|f| f.blocks.iter_mut());
+            for members in zones.flat_map(|b| b.records.iter_mut()).filter_map(|r| r.members.as_mut()) {
+                members.retain(|m| member(m) != Some((t, removed)));
+                if was_added {
+                    // Channels added after this one move up in the edit numbering.
+                    for m in members.iter_mut() {
+                        if let Some((mt, n)) = member(m)
+                            && mt == t
+                            && n > removed
+                        {
+                            m.0.insert("Channel List".into(), Value::from(n - 1));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn zone_members_mut(w: &mut [DecodedFile], zone: usize) -> Result<&mut Vec<Fields>> {
+        w.iter_mut()
+            .find(|f| f.name == ZONE_FILE)
+            .and_then(|f| f.blocks.first_mut())
+            .and_then(|b| b.records.get_mut(zone))
+            .and_then(|r| r.members.as_mut())
+            .with_context(|| format!("there is no zone {}", zone + 1))
+    }
+
+    /// Members of zone `zone` (view position) as (member type, 1-based channel number in the view).
+    pub fn zone_members(&self, zone: usize) -> Vec<(i64, i64)> {
+        self.view
+            .iter()
+            .find(|f| f.name == ZONE_FILE)
+            .and_then(|f| f.blocks.first())
+            .and_then(|b| b.records.get(zone))
+            .and_then(|r| r.members.as_ref())
+            .map_or_else(Vec::new, |m| m.iter().filter_map(member).collect())
+    }
+
+    /// Append channel number `channel` (1-based, as in the view) of `kind` to zone `zone`.
+    pub fn add_zone_member(&mut self, zone: usize, kind: ChannelKind, channel: usize) -> Result<()> {
+        let numbers = self.edit_numbers(kind)?;
+        let number = *channel
+            .checked_sub(1)
+            .and_then(|i| numbers.get(i))
+            .with_context(|| format!("there is no {kind:?} channel {channel}"))?;
+        if self.zone_members(zone).contains(&(kind.member_type(), channel as i64)) {
+            bail!("that channel is already in zone {}", zone + 1);
+        }
+        self.update(|w| {
+            let members = Self::zone_members_mut(w, zone)?;
+            let mut m = Map::new();
+            m.insert("Channel List".into(), Value::from(number));
+            m.insert("Channel Type".into(), Value::from(kind.member_type()));
+            members.push(Fields(m));
+            Ok(())
+        })
+    }
+
+    /// Remove member `member` (0-based) of zone `zone`.
+    pub fn remove_zone_member(&mut self, zone: usize, member: usize) -> Result<()> {
+        self.update(|w| {
+            let members = Self::zone_members_mut(w, zone)?;
+            if member >= members.len() {
+                bail!("zone {} has no member {}", zone + 1, member + 1);
+            }
+            members.remove(member);
+            Ok(())
+        })
+    }
+
+    /// Move member `member` of zone `zone` one place up (`up`) or down.
+    pub fn move_zone_member(&mut self, zone: usize, member: usize, up: bool) -> Result<()> {
+        self.update(|w| {
+            let members = Self::zone_members_mut(w, zone)?;
+            let other = if up { member.checked_sub(1) } else { Some(member + 1) };
+            let Some(other) = other.filter(|&o| o < members.len() && member < members.len()) else {
+                bail!("cannot move that member further");
+            };
+            // Swap only the channel, keeping each slot's other bytes, so moving back restores
+            // the original exactly.
+            for key in ["Channel List", "Channel Type"] {
+                let (a, b) = (members[member].0.get(key).cloned(), members[other].0.get(key).cloned());
+                if let (Some(a), Some(b)) = (a, b) {
+                    members[member].0.insert(key.into(), b);
+                    members[other].0.insert(key.into(), a);
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Save the configuration including pending edits as the new folder `out` (same layout as
+    /// `hyt read`, keeping the radio identity), then continue editing from that folder.
+    pub fn save_as(&mut self, out: &Path) -> Result<ReadManifest> {
+        let source = format!("edited in hyt-gui from {}", self.folder.display());
+        let manifest = save_edited(&self.saved, self.files(), out, &source)?;
+        let saved = load_read(out)?;
+        let base = decode_read(&saved, &self.layout)?;
+        self.folder = out.to_path_buf();
+        self.saved = saved;
+        self.working = base.clone();
+        self.view = base.clone();
+        self.base = base;
+        self.pending = None;
+        Ok(manifest)
+    }
+}

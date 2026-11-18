@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hyt</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" type="module"></script>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">hyt</div>
+    <button id="btn-open" title="Open a folder saved by hyt read or by this app">Open folder…</button>
+    <button id="btn-read" title="Read every setting from the radio into a new folder">Read radio…</button>
+    <span class="sep"></span>
+    <button id="btn-save" disabled title="Save the configuration, including your changes, as a new folder">Save as…</button>
+    <button id="btn-write" class="danger" disabled title="Write the configuration to the radio">Write to radio…</button>
+    <div id="identity" class="identity"></div>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+  <main>
+    <nav id="nav"></nav>
+    <section id="content"></section>
+    <aside id="detail"></aside>
+  </main>
+  <footer id="status"></footer>
+
+  <dialog id="dlg-read">
+    <form method="dialog">
+      <h2>Read radio</h2>
+      <p class="note">Reads every settings file from the radio into a new folder and opens it. Reading does not change the radio. CPS must not be using the port.</p>
+      <label>Serial port
+        <span class="row"><select id="read-port"></select><button type="button" id="read-refresh">Refresh</button></span>
+      </label>
+      <label id="read-replay-row" hidden>Recording to replay (testing)
+        <span class="row"><input id="read-replay" type="text" readonly><button type="button" id="read-replay-browse">Browse…</button></span>
+      </label>
+      <label>Save into new folder
+        <span class="row"><input id="read-out" type="text" spellcheck="false"><button type="button" id="read-out-browse">Browse…</button></span>
+      </label>
+      <menu><button id="read-go" value="go" class="primary">Read</button><button value="cancel">Cancel</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-save">
+    <form method="dialog">
+      <h2>Save as</h2>
+      <p class="note">Saves the whole configuration, including your changes, as a new folder (same layout as <code>hyt read</code>). You then continue editing from the new folder.</p>
+      <label>New folder
+        <span class="row"><input id="save-out" type="text" spellcheck="false"><button type="button" id="save-browse">Browse…</button></span>
+      </label>
+      <menu><button value="go" class="primary">Save</button><button value="cancel">Cancel</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-write" class="wide">
+    <form method="dialog">
+      <h2>Write to radio</h2>
+      <div id="write-summary"></div>
+      <label id="write-save-row">First save your changes into new folder
+        <span class="row"><input id="write-save" type="text" spellcheck="false"><button type="button" id="write-save-browse">Browse…</button></span>
+      </label>
+      <label>Serial port
+        <span class="row"><select id="write-port"></select><button type="button" id="write-refresh">Refresh</button></span>
+      </label>
+      <label>Backup of the radio, taken right before writing, into new folder
+        <span class="row"><input id="write-backup" type="text" spellcheck="false"><button type="button" id="write-backup-browse">Browse…</button></span>
+      </label>
+      <ol class="steps">
+        <li>Read the whole radio into the backup folder.</li>
+        <li>Refuse to continue unless it is the same radio (model, serial number, RCDB version).</li>
+        <li>Write the settings files in CPS's order.</li>
+        <li>Wait for the radio to restart, read it back and compare every written file.</li>
+      </ol>
+      <label class="check"><input id="write-confirm" type="checkbox"> I want to overwrite the radio's configuration with this one.</label>
+      <menu><button id="write-go" value="go" class="danger" disabled>Write to radio</button><button value="cancel">Cancel</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-progress">
+    <h2 id="prog-title">Working…</h2>
+    <p id="prog-stage" class="note">Starting</p>
+    <progress id="prog-bar"></progress>
+    <p class="note">Keep the cable connected and the radio on.</p>
+  </dialog>
+
+  <dialog id="dlg-message">
+    <form method="dialog">
+      <h2 id="msg-title"></h2>
+      <div id="msg-body"></div>
+      <menu><button id="msg-ok" value="ok" class="primary">OK</button><button id="msg-cancel" value="cancel">Cancel</button></menu>
+    </form>
+  </dialog>
+</body>
+</html>

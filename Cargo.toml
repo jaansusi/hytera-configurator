@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/hytera-proto",
+    "crates/hytera-codeplug",
+    "crates/hytera-models",
+    "crates/hyt-core",
+    "crates/hyt-cli",
+    "crates/hyt-gui",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+hytera-proto = { path = "crates/hytera-proto" }
+hytera-codeplug = { path = "crates/hytera-codeplug" }
+hytera-models = { path = "crates/hytera-models" }
+hyt-core = { path = "crates/hyt-core" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+roxmltree = "0.20"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serialport = "4"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+crc32fast = "1"

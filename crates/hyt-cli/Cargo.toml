@@ -1,0 +1,22 @@
+[package]
+name = "hyt-cli"
+description = "Command-line tool to read and write Hytera G2 radio settings without CPS"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "hyt"
+path = "src/main.rs"
+
+[dependencies]
+hyt-core.workspace = true
+hytera-proto.workspace = true
+hytera-codeplug.workspace = true
+hytera-models.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

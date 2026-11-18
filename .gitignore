@@ -1,0 +1,7 @@
+/target/
+.venv/
+__pycache__/
+tools/tap.stop
+# Recordings contain the radio's full configuration (contacts, possibly encryption keys). Keep them out of any
+# shared repository.
+captures/
