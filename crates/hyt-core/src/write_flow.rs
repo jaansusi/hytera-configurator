@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use hytera_codeplug::container::prepare_for_write;
 use hytera_codeplug::rcdb::{FileEntry, RcdbRoot};
 use hytera_proto::Session;
@@ -133,13 +133,35 @@ pub fn write_config<T: Transport>(
     on_event(WriteEvent::Writing { files: plan.len(), differing });
     let total = plan.len();
     let mut done = 0;
-    write_radio(session, &plan, profile.chunk_size, |entry| {
+    let written = write_radio(session, &plan, profile.chunk_size, |entry| {
         done += 1;
         on_event(WriteEvent::Wrote { done, total, entry });
-    })?;
+    });
+    if let Err(e) = written {
+        let advice = if done == 0 {
+            format!(
+                "writing failed before any file was complete, so the radio most likely still has its previous \
+                 settings; switch it off and on and read it to check (backup in {})",
+                backup.display()
+            )
+        } else {
+            format!(
+                "writing stopped after {done} of {total} files: the radio may now hold a mix of old and new \
+                 settings. Write again, or write the backup in {} to go back",
+                backup.display()
+            )
+        };
+        return Err(e.context(advice));
+    }
 
     on_event(WriteEvent::WaitingForRestart);
-    let after = read_back_after_restart(session, rcdb, settings, &mut on_event)?;
+    let after = read_back_after_restart(session, rcdb, settings, &mut on_event).with_context(|| {
+        format!(
+            "all {total} files were sent, but the radio could not be read back to verify them; read it again to \
+             check (backup in {})",
+            backup.display()
+        )
+    })?;
     let bad = verify_write(&plan, &after.files);
     if !bad.is_empty() {
         let names: Vec<String> = bad.iter().map(|e| format!("{} {}", e.id, e.name)).collect();

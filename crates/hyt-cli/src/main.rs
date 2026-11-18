@@ -11,7 +11,7 @@ use hytera_codeplug::options::Options;
 use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot};
 use hytera_models::profile_for;
 use hytera_proto::Session;
-use hytera_proto::transport::{ReplayTransport, SerialTransport, Transport, available_ports};
+use hytera_proto::transport::{ReplayTransport, Transport, available_ports};
 
 /// Read Hytera G2 radio settings without Hytera CPS.
 #[derive(Parser)]
@@ -138,7 +138,7 @@ impl Source {
     fn open(&self) -> Result<(Box<dyn Transport>, String)> {
         match (&self.port, &self.replay) {
             (Some(port), _) => Ok((
-                Box::new(SerialTransport::open(port).with_context(|| format!("opening {port}"))?),
+                Box::new(hyt_core::open_port(port)?),
                 port.clone(),
             )),
             (_, Some(path)) => Ok((
@@ -340,7 +340,7 @@ fn write_command(port: &str, from: &Path, backup: &Path, rcdb: &RcdbRoot, allow_
     if backup.exists() {
         bail!("backup folder {} already exists; choose a new one", backup.display());
     }
-    let transport = SerialTransport::open(port).with_context(|| format!("opening {port}"))?;
+    let transport = hyt_core::open_port(port)?;
     let mut session = Session::new(transport);
     println!("Taking a fresh backup into {} ...", backup.display());
     let source = from.display().to_string();

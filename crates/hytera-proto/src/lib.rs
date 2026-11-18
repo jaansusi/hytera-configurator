@@ -11,6 +11,7 @@ pub mod checksum;
 pub mod error;
 pub mod link;
 pub mod session;
+pub mod sim;
 pub mod transport;
 
 pub use error::{Error, Result};

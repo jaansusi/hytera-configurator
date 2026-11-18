@@ -14,7 +14,8 @@ use hyt_core::write_flow::{WriteEvent, WriteJob, WriteSettings, write_config};
 use hyt_core::{load_read, read_radio as read_all, save_read};
 use hytera_codeplug::rcdb::RcdbRoot;
 use hytera_proto::Session;
-use hytera_proto::transport::{ReplayTransport, SerialTransport, Transport, available_ports};
+use hytera_proto::sim::SharedSim;
+use hytera_proto::transport::{ReplayTransport, Transport, available_ports};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -31,11 +32,19 @@ pub struct AppState {
     options_path: Option<PathBuf>,
     startup_folder: Option<PathBuf>,
     dev: bool,
+    /// A simulated radio (from `HYT_GUI_SIM`), offered as a port, and the folder it was made from.
+    sim: Option<(SharedSim, String)>,
 }
 
 impl AppState {
-    pub fn new(rcdb_dir: PathBuf, options_path: Option<PathBuf>, startup_folder: Option<PathBuf>, dev: bool) -> Self {
-        AppState { ws: Mutex::new(None), busy: AtomicBool::new(false), rcdb_dir, options_path, startup_folder, dev }
+    pub fn new(
+        rcdb_dir: PathBuf,
+        options_path: Option<PathBuf>,
+        startup_folder: Option<PathBuf>,
+        dev: bool,
+        sim: Option<(SharedSim, String)>,
+    ) -> Self {
+        AppState { ws: Mutex::new(None), busy: AtomicBool::new(false), rcdb_dir, options_path, startup_folder, dev, sim }
     }
 
     fn rcdb(&self) -> RcdbRoot {
@@ -78,6 +87,8 @@ pub struct AppInfo {
     startup_folder: Option<String>,
     /// Offer replaying recordings instead of a serial port.
     dev: bool,
+    /// Folder the simulated radio was made from, when there is one.
+    sim: Option<String>,
 }
 
 #[tauri::command]
@@ -87,6 +98,7 @@ pub fn app_info(state: State<'_, AppState>) -> AppInfo {
         rcdb_found: state.rcdb_dir.join("RcdbJsons").is_dir(),
         startup_folder: state.startup_folder.as_ref().map(|p| p.display().to_string()),
         dev: state.dev,
+        sim: state.sim.as_ref().map(|(_, folder)| folder.clone()),
     }
 }
 
@@ -284,19 +296,23 @@ fn emit(app: &AppHandle, op: &'static str, stage: impl Into<String>, done: usize
     let _ = app.emit("progress", Progress { op, stage: stage.into(), done, total });
 }
 
-/// Where to read from: a serial port, or (dev mode only) a recorded CPS session.
+/// Where to read from or write to: a serial port, (dev mode only) a recorded CPS session, or the
+/// simulated radio (when `HYT_GUI_SIM` is set).
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadSource {
     Port(String),
     Replay(String),
+    Sim,
 }
 
 fn open_transport(state: &AppState, source: &ReadSource) -> anyhow::Result<(Box<dyn Transport>, String)> {
     Ok(match source {
-        ReadSource::Port(port) => {
-            (Box::new(SerialTransport::open(port).with_context(|| format!("opening {port}"))?), port.clone())
-        }
+        ReadSource::Port(port) => (Box::new(hyt_core::open_port(port)?), port.clone()),
+        ReadSource::Sim => match &state.sim {
+            Some((sim, folder)) => (Box::new(sim.clone()), format!("simulated radio ({folder})")),
+            None => anyhow::bail!("no simulated radio (set HYT_GUI_SIM to a saved folder)"),
+        },
         ReadSource::Replay(path) if state.dev => (
             Box::new(ReplayTransport::from_jsonl_file(Path::new(path)).with_context(|| format!("loading {path}"))?),
             format!("replay:{path}"),

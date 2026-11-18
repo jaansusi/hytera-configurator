@@ -105,7 +105,7 @@ pub fn read_radio<T: Transport>(
     rcdb: &RcdbRoot,
     mut on_file: impl FnMut(&FileEntry, &[u8], usize, usize),
 ) -> Result<ReadResult> {
-    let info = session.identify().context("identifying the radio")?;
+    let info = hinted(session.identify(), "identifying the radio")?;
     let profile = profile_for(&info);
     let Some(rcdb_version) = info.rcdb_version() else {
         bail!("the radio did not report an RCDB version (info item 0x0002)");
@@ -122,26 +122,112 @@ pub fn read_radio<T: Transport>(
     let by_id: BTreeMap<u16, FileEntry> = list.iter().map(|e| (e.id, e.clone())).collect();
     let ids: Vec<u16> = list.iter().map(|e| e.id).collect();
     let (total, mut done) = (ids.len(), 0);
-    let mut data = session
-        .read_files(&ids, profile.chunk_size, |id, bytes| {
-            done += 1;
-            on_file(&by_id[&id], bytes, done, total)
-        })
-        .context("reading files")?;
+    let read = session.read_files(&ids, profile.chunk_size, |id, bytes| {
+        done += 1;
+        on_file(&by_id[&id], bytes, done, total)
+    });
+    let mut data = hinted(read, &format!("reading files (after {done} of {total})"))?;
     let files = list.into_iter().map(|e| { let d = data.remove(&e.id).unwrap_or_default(); (e, d) }).collect();
     Ok(ReadResult { info, profile, rcdb_version, files })
 }
 
-/// Save a read to `out` (`NNN_Name.bin` per file plus `manifest.json`). `out` must be new or empty.
-pub fn save_read(result: &ReadResult, out: &Path, source: &str) -> Result<ReadManifest> {
-    if out.exists() && out.read_dir().with_context(|| format!("reading {}", out.display()))?.next().is_some() {
-        bail!("{} already exists and is not empty", out.display());
+/// Advice added to errors talking to the radio, by kind.
+fn hint(e: &hytera_proto::Error) -> &'static str {
+    match e {
+        hytera_proto::Error::Timeout { .. } => {
+            " (no answer: is the radio switched on, and the programming cable plugged in firmly at both ends?)"
+        }
+        hytera_proto::Error::Status { .. } => " (the radio refused the request)",
+        _ => "",
     }
-    std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+}
+
+/// `r` with `what` (plus advice for the error's kind) as context.
+fn hinted<T>(r: hytera_proto::Result<T>, what: &str) -> Result<T> {
+    r.map_err(|e| {
+        let h = hint(&e);
+        anyhow::Error::new(e).context(format!("{what}{h}"))
+    })
+}
+
+/// Open the programming cable's serial port, with advice when that fails.
+pub fn open_port(name: &str) -> Result<hytera_proto::transport::SerialTransport> {
+    hytera_proto::transport::SerialTransport::open(name).with_context(|| {
+        format!("opening {name} (if CPS or another program is using the port, close it; check that the cable is plugged in)")
+    })
+}
+
+/// A simulated radio holding the files and identity of a saved folder (see
+/// [`hytera_proto::sim`]), for trying reads and writes without a radio.
+pub fn sim_radio(saved: &SavedRead) -> hytera_proto::sim::SimRadio {
+    let info = saved
+        .manifest
+        .info
+        .iter()
+        .filter_map(|e| {
+            let item = u16::from_str_radix(e.item.trim_start_matches("0x"), 16).ok()?;
+            let value = (0..e.hex.len() / 2).filter_map(|i| u8::from_str_radix(&e.hex[2 * i..2 * i + 2], 16).ok()).collect();
+            Some((item, (e.status, value)))
+        })
+        .collect();
+    hytera_proto::sim::SimRadio::new(info, saved.files.clone())
+}
+
+/// A folder being filled: files go into `<name>.partial` next to it, which is renamed to the final
+/// name only by [`NewFolder::finish`], so a failed save never leaves a half-written folder. An
+/// unfinished `.partial` folder is removed when dropped.
+struct NewFolder {
+    out: PathBuf,
+    tmp: PathBuf,
+    finished: bool,
+}
+
+impl NewFolder {
+    /// `out` must not exist or be empty.
+    fn create(out: &Path) -> Result<Self> {
+        if out.exists() && out.read_dir().with_context(|| format!("reading {}", out.display()))?.next().is_some() {
+            bail!("{} already exists and is not empty", out.display());
+        }
+        let name = out.file_name().with_context(|| format!("{} has no folder name", out.display()))?;
+        let tmp = out.with_file_name(format!("{}.partial", name.to_string_lossy()));
+        if tmp.exists() {
+            std::fs::remove_dir_all(&tmp).with_context(|| format!("removing the leftover {}", tmp.display()))?;
+        }
+        std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        Ok(NewFolder { out: out.to_path_buf(), tmp, finished: false })
+    }
+
+    fn file(&self, name: &str) -> PathBuf {
+        self.tmp.join(name)
+    }
+
+    fn finish(mut self) -> Result<()> {
+        if self.out.exists() {
+            std::fs::remove_dir(&self.out).with_context(|| format!("replacing the empty {}", self.out.display()))?;
+        }
+        std::fs::rename(&self.tmp, &self.out)
+            .with_context(|| format!("renaming {} to {}", self.tmp.display(), self.out.display()))?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for NewFolder {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = std::fs::remove_dir_all(&self.tmp);
+        }
+    }
+}
+
+/// Save a read to `out` (`NNN_Name.bin` per file plus `manifest.json`). `out` must be new or empty;
+/// it appears only once everything is written.
+pub fn save_read(result: &ReadResult, out: &Path, source: &str) -> Result<ReadManifest> {
+    let folder = NewFolder::create(out)?;
     let mut files = Vec::new();
     for (entry, bytes) in &result.files {
         let file = format!("{:03}_{}.bin", entry.id, sanitize(&entry.name));
-        write(&out.join(&file), bytes)?;
+        write(&folder.file(&file), bytes)?;
         let crc = match check_crc(bytes) {
             CrcCheck::Body => "body-crc32",
             CrcCheck::StaleTail { .. } => "body-crc32-before-stale-tail",
@@ -167,7 +253,8 @@ pub fn save_read(result: &ReadResult, out: &Path, source: &str) -> Result<ReadMa
         info: info_entries(&result.info),
         files,
     };
-    write(&out.join("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    write(&folder.file("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    folder.finish()?;
     Ok(manifest)
 }
 
@@ -231,14 +318,11 @@ pub fn load_read(dir: &Path) -> Result<SavedRead> {
 /// Save `files` (e.g. after [`edit::apply_edits`]) as a new folder in the same layout as
 /// [`save_read`], keeping the radio identity of `base` so `hyt write` accepts it for that radio.
 pub fn save_edited(base: &SavedRead, files: &BTreeMap<u16, Vec<u8>>, out: &Path, source: &str) -> Result<ReadManifest> {
-    if out.exists() && out.read_dir().with_context(|| format!("reading {}", out.display()))?.next().is_some() {
-        bail!("{} already exists and is not empty", out.display());
-    }
-    std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    let folder = NewFolder::create(out)?;
     let mut records = Vec::new();
     for f in &base.manifest.files {
         let bytes = files.get(&f.id).with_context(|| format!("file {} missing", f.id))?;
-        write(&out.join(&f.file), bytes)?;
+        write(&folder.file(&f.file), bytes)?;
         let crc = match check_crc(bytes) {
             CrcCheck::Body => "body-crc32",
             CrcCheck::StaleTail { .. } => "body-crc32-before-stale-tail",
@@ -259,7 +343,8 @@ pub fn save_edited(base: &SavedRead, files: &BTreeMap<u16, Vec<u8>>, out: &Path,
         info: serde_json::from_value(serde_json::to_value(&m.info)?)?,
         files: records,
     };
-    write(&out.join("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    write(&folder.file("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    folder.finish()?;
     Ok(manifest)
 }
 

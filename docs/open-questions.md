@@ -16,7 +16,7 @@ answer into the right doc and note it under "Resolved" with the date and the evi
 | 8 | Link header bytes 8–10, 11, 13–15 (constant so far); info items 3, 10, 0x45, 0x65, 0x100, 0x200, 0xFFF4; sub-command `0x001B` | Low | Other recordings, CPS "radio information" screen |
 | 9 | Is the extra `00` byte rule "frame length multiple of 64" or something else? (3 of 3 consistent) | Low | More recordings with 64-byte-multiple frames |
 | 10 | Other models and firmware: same framing? which RCDB versions? `TableLink.xml` only ships for V1.5.24.000 | Supporting other radios | Recordings from other radios |
-| 11 | Error handling: status codes other than 0, behaviour on a pulled cable mid-write | Robust app | Controlled tests |
+| 11 | Error handling on the real radio: status codes other than 0, behaviour on a pulled cable mid-write. `hyt` now reports how far a failed write got and points to the backup; tested on the simulated radio (`hytera-proto/src/sim.rs`, `hyt-core/tests/robustness.rs`), not on the BP515 | Robust app | Controlled tests (pull the cable during a read; never during a write) |
 | 12 | Does `hyt-gui` build and run on Linux (WebKitGTK 4.1, `pl2303` driver) and macOS (WKWebView, Prolific driver for the PL2303GC)? Only Windows 11 (WebView2 157) has been tried (2026-11-19) | Cross-platform release | Build in WSL / on a Mac or in CI; read the radio there |
 
 ## Resolved

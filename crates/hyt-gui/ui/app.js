@@ -496,15 +496,18 @@ async function fillPorts(select) {
     setStatus(errorText(e), 'error');
   }
   select.replaceChildren(...ports.map((p) => h('option', { value: p.name }, p.description ? `${p.name} — ${p.description}` : p.name)));
+  if (state.info?.sim) select.append(h('option', { value: '__sim__' }, `Simulated radio (${state.info.sim})`));
   if (state.info?.dev) select.append(h('option', { value: '__replay__' }, 'Replay a recording (testing)'));
-  if (!ports.length && !state.info?.dev) select.append(h('option', { value: '' }, 'No serial ports found'));
+  if (!select.options.length) select.append(h('option', { value: '' }, 'No serial ports found'));
   const preferred = ports.find((p) => p.name === previous) || ports.find((p) => /prolific|usb/i.test(p.description)) || ports[0];
-  if (preferred) select.value = preferred.name;
+  if (previous === '__sim__' || (state.info?.sim && !preferred)) select.value = '__sim__';
+  else if (preferred) select.value = preferred.name;
   select.dispatchEvent(new Event('change'));
 }
 
 /** `{port}` or, in dev mode, `{replay}` for the chosen entry of a port list. */
 async function chosenSource(select, replayInput) {
+  if (select.value === '__sim__') return 'sim';
   if (select.value === '__replay__') {
     if (!replayInput.value) throw new Error('choose a recording to replay');
     return { replay: replayInput.value };
