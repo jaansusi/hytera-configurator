@@ -175,3 +175,20 @@ fn references_are_shown_and_edited_by_name() {
     let d = record_detail(&ws, &table(&ws, "digital").unwrap().rows[0].record);
     assert_eq!(d.iter().find(|d| d.column.key == "Scan List Roam List").unwrap().cell.text, "None");
 }
+
+#[test]
+fn duplicating_a_channel_copies_every_field() {
+    let Some(mut ws) = open(CURRENT) else { return };
+    let position = ws.duplicate_channel(ChannelKind::Digital, 1).unwrap();
+    assert_eq!(position, 2);
+    let file = ws.view().iter().find(|f| f.name == "QEU_C_DChannel").unwrap();
+    let records = &file.blocks[0].records;
+    assert_eq!(records[2].fields, records[1].fields, "every field copied");
+    // The record's bytes equal the source's too (all bytes are covered by fields).
+    let s = hytera_codeplug::structure::parse(&ws.files()[&file.id]).unwrap();
+    let r = &s.blocks[0].records;
+    assert_eq!(ws.files()[&file.id][r[2].clone()], ws.files()[&file.id][r[1].clone()]);
+    let t = table(&ws, "digital").unwrap();
+    assert!(t.rows[2].added);
+    assert!(ws.duplicate_channel(ChannelKind::Digital, 9).is_err());
+}

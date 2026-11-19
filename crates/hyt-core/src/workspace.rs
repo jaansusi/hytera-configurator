@@ -487,6 +487,29 @@ impl Workspace {
         Ok(position)
     }
 
+    /// Append a copy of the channel at view position `source`: a new channel (added like CPS adds
+    /// one) whose every field is set to the source channel's value. Returns the new position.
+    /// How CPS copies channels has not been recorded; the result is the same as adding a channel
+    /// and typing in all of the source's values.
+    pub fn duplicate_channel(&mut self, kind: ChannelKind, source: usize) -> Result<usize> {
+        let block = Self::channel_block(&self.view, kind)?;
+        let fields = block
+            .records
+            .get(source)
+            .and_then(|r| r.fields.clone())
+            .with_context(|| format!("there is no {kind:?} channel {}", source + 1))?;
+        if block.records.len() >= usize::from(block.capacity) {
+            bail!("the radio holds at most {} {kind:?} channels", block.capacity);
+        }
+        let position = block.records.len();
+        self.update(|w| {
+            let file = w.iter_mut().find(|f| f.name == kind.file()).context("no channel list")?;
+            file.blocks[0].records.push(Record { index: None, fields: Some(fields), members: None });
+            Ok(())
+        })?;
+        Ok(position)
+    }
+
     /// Remove the channel at view position `position`. Zone members pointing to it are removed and
     /// later channels renumbered, as CPS does; other references to an affected channel make this
     /// fail (see [`apply_edits`]).

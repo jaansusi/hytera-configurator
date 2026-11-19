@@ -36,6 +36,9 @@ How to record: `docs/capture-howto.md`. Each recording is a CPS read + one chang
 - [ ] **CPS templates (open question 13)**: `hyt tpl export <folder> --out x.tpl --name "hyt test"`, then
   import `x.tpl` into CPS's template library and open it (also try an export of an imported template). Check
   CPS's Radio Information page for it (hyt leaves that file empty, as on the radio).
+- [ ] **Greyed-out fields (CPS's dependency rules)**: compare a few with CPS's screens, e.g. a digital channel
+  with RX Only on (TX settings greyed), digital emergency with type Disable, analog TX tone value with tone type
+  None. Also check that the app's "Selected" matches CPS's "Selected Channel" in revert-channel fields.
 - [ ] **One CPS screenshot** of the digital channel table showing the "TX Contact" and "RX Group List" columns
   (open question 5b: confirms how the app names them).
 
