@@ -93,6 +93,15 @@ const READ_ONLY_DEVELOPER: &str = "Developer settings, shown for reference only.
 const READ_ONLY_PASSWORD: &str = "Passwords and programming locks are not changed by this app.";
 const READ_ONLY_DEVICE: &str = "Set by the radio.";
 const READ_ONLY_FILE: &str = "CPS never writes this file.";
+const READ_ONLY_MODEL: &str = "Not available on this model (CPS's model-number rules).";
+
+/// CPS's model-number overrides for the opened radio, when the rules were exported.
+fn model_overrides(ws: &Workspace) -> Option<hytera_codeplug::models::ModelOverrides> {
+    let version = &ws.manifest().rcdb_version;
+    let rules = hytera_codeplug::models::ModelRules::load(&hytera_codeplug::models::ModelRules::default_path(version)?).ok()?;
+    let model = crate::model_number(ws.manifest())?;
+    (rules.rcdb_version == *version).then(|| rules.for_model(model))
+}
 
 /// Our topic for a CPS category path (root first).
 fn topic_for(path: &[&str]) -> Option<&'static str> {
@@ -155,6 +164,9 @@ pub(crate) fn profile(ws: &Workspace) -> &'static ModelProfile {
 fn plan(ws: &Workspace) -> Vec<PlanTopic> {
     let Some(ui) = &ws.ui else { return Vec::new() };
     let excluded = profile(ws).write_excluded_files;
+    let model = model_overrides(ws);
+    let hidden = |id: u32| model.as_ref().is_some_and(|m| m.visible.get(&id) == Some(&false));
+    let disabled = |id: u32| model.as_ref().is_some_and(|m| m.enable.get(&id) == Some(&false));
     let mut seen: HashSet<(u16, u16, String)> = HashSet::new();
     let mut topics: Vec<PlanTopic> = Vec::new();
     for (path, page) in ui.pages() {
@@ -174,7 +186,7 @@ fn plan(ws: &Workspace) -> Vec<PlanTopic> {
             let mut settings = Vec::new();
             for &id in &g.params {
                 for def in ws.layout.find(id) {
-                    if def.block_type != 0 || !ws.base().iter().any(|f| f.id == def.file_id) {
+                    if def.block_type != 0 || !ws.base().iter().any(|f| f.id == def.file_id) || hidden(def.id) {
                         continue;
                     }
                     let Some(key) = key_of(ws, def) else { continue };
@@ -188,7 +200,8 @@ fn plan(ws: &Workspace) -> Vec<PlanTopic> {
                     let label = ws.options.as_ref().and_then(|o| o.param(def.id)).map_or(key.clone(), |p| p.name.clone());
                     let read_only = topic_read_only
                         .or(page_read_only)
-                        .or_else(|| excluded.contains(&def.file_id).then_some(READ_ONLY_FILE));
+                        .or_else(|| excluded.contains(&def.file_id).then_some(READ_ONLY_FILE))
+                        .or_else(|| disabled(def.id).then_some(READ_ONLY_MODEL));
                     settings.push(PlanSetting { at, label, read_only });
                 }
             }
