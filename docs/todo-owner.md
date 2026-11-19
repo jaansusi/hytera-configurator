@@ -30,6 +30,9 @@ How to record: `docs/capture-howto.md`. Each recording is a CPS read + one chang
   Optional; only if you use encryption.
 - [ ] **Password/lock, licence activation, radio reset, reading a locked radio**: out of scope unless you
   want them; each needs a recording and carries risk (see `docs/cps-features.md`, gap 15).
+- [ ] **Frequency limits by model (open question 5d)**: in CPS, type 399.995 and 470.005 MHz into a channel's RX
+  frequency (both should be refused; 400.000 and 470.000 accepted), and check that "In Call TX Admit" has no
+  "Always Allow". The app now enforces these limits from CPS's model-number rules.
 - [ ] **One CPS screenshot** of the digital channel table showing the "TX Contact" and "RX Group List" columns
   (open question 5b: confirms how the app names them).
 
