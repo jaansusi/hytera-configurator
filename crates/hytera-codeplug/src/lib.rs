@@ -2,10 +2,12 @@
 
 pub mod container;
 pub mod decode;
+pub mod help;
 pub mod layout;
 pub mod link_rules;
 pub mod models;
 pub mod options;
+pub mod param_visibility;
 pub mod rcdb;
 pub mod structure;
 pub mod ui;

@@ -6,6 +6,7 @@
 //! Programming passwords never appear. Field and file names are those of RCDB V1.5.24.000.
 
 use hytera_codeplug::decode::{DecodedFile, keys};
+use hytera_codeplug::help::ParamHelp;
 use hytera_codeplug::layout::FieldDef;
 use hytera_codeplug::options::Options;
 use serde::Serialize;
@@ -39,6 +40,20 @@ pub struct Column {
     /// Unit of the values (shown in the header, not in the cells).
     pub unit: String,
     pub editor: Editor,
+    /// CPS's help text for the field, when CPS has one (shown on request).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub help: Option<ParamHelp>,
+    /// Why CPS does not show this field for the radio (licence or internal), when it does not.
+    /// Such fields are read-only; the GUI shows them only on request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<crate::visibility::Hidden>,
+}
+
+impl Column {
+    /// A column computed by hyt (no field behind it, so no help), read-only.
+    pub(crate) fn computed(key: &str, title: &str) -> Self {
+        Column { key: key.into(), title: title.into(), unit: String::new(), editor: Editor::ReadOnly, help: None, hidden: None }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -277,9 +292,21 @@ fn editor(options: Option<&Options>, def: &FieldDef, key: &str) -> Editor {
 pub(crate) fn column(ws: &Workspace, file: u16, block: u16, key: &str, title: &str) -> Column {
     let options = ws.options.as_ref();
     match crate::edit::def_for(&ws.layout, file, block, key) {
-        Some(def) => Column { key: key.into(), title: title.into(), unit: unit(options, def), editor: editor(options, def, key) },
-        None => Column { key: key.into(), title: title.into(), unit: String::new(), editor: Editor::ReadOnly },
+        Some(def) => Column {
+            key: key.into(),
+            title: title.into(),
+            unit: unit(options, def),
+            editor: editor(options, def, key),
+            help: help_for(ws, def),
+            hidden: ws.hidden.get(&def.id).cloned(),
+        },
+        None => Column::computed(key, title),
     }
+}
+
+/// CPS's help for field `def`.
+pub(crate) fn help_for(ws: &Workspace, def: &FieldDef) -> Option<ParamHelp> {
+    ws.help.as_ref()?.get(def.id).cloned()
 }
 
 pub(crate) fn cell(ws: &Workspace, at: FieldRef, strip_unit: bool) -> Cell {
@@ -294,7 +321,8 @@ pub(crate) fn cell(ws: &Workspace, at: FieldRef, strip_unit: bool) -> Cell {
     };
     let changed = ws.original_value(&at) != Some(value);
     let disabled = ws.restriction(&at).map(|r| r.reason);
-    let editable = disabled.is_none() && def.is_some_and(|d| is_editable(d, &at.key, value));
+    let editable =
+        disabled.is_none() && def.is_some_and(|d| is_editable(d, &at.key, value) && !ws.hidden.contains_key(&d.id));
     let editor = names
         .and(ws.reference_choices(&at))
         .map(|choices| Editor::Choice { options: choices.into_iter().map(|(_, l)| l).collect() });
@@ -394,7 +422,7 @@ fn zone_members(ws: &Workspace) -> Vec<Vec<ZoneMember>> {
 fn zones_table(ws: &Workspace) -> Option<Table> {
     let mut table = record_table(ws, &ZONE_ALIASES)?;
     let members = zone_members(ws);
-    table.columns.push(Column { key: "members".into(), title: "Channels".into(), unit: String::new(), editor: Editor::ReadOnly });
+    table.columns.push(Column::computed("members", "Channels"));
     let base_members = |zone: usize| -> Option<Vec<(i64, i64)>> {
         let b = file(ws.base(), ZONE_MEMBERS_FILE)?.blocks.first()?;
         let ms = b.records.get(zone)?.members.as_ref()?;

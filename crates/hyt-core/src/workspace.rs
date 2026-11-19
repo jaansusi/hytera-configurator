@@ -171,6 +171,14 @@ fn member(m: &Fields) -> Option<(i64, i64)> {
     Some((m.0.get("Channel Type")?.as_i64()?, m.0.get("Channel List")?.as_i64()?))
 }
 
+/// Pending edits saved by [`Workspace::checkpoint`].
+#[derive(Clone)]
+pub struct Checkpoint {
+    working: Vec<DecodedFile>,
+    view: Vec<DecodedFile>,
+    pending: Option<Edited>,
+}
+
 /// An opened folder and its pending edits.
 ///
 /// Two forms of the configuration are kept. The *edit form* ([`Workspace::edit_form`]) is what
@@ -198,6 +206,10 @@ pub struct Workspace {
     pub rules: crate::link_rules::Links,
     /// Why no link rules are applied, when they are not.
     pub rules_note: Option<String>,
+    /// CPS's help texts for fields (`CPSParams.xlsx` in the RCDB root), when found.
+    pub help: Option<hytera_codeplug::help::HelpCatalog>,
+    /// Fields CPS does not show for this radio, by layout field id ([`crate::visibility`]).
+    pub hidden: std::collections::HashMap<u32, crate::visibility::Hidden>,
     links: Vec<TableLink>,
     base: Vec<DecodedFile>,
     working: Vec<DecodedFile>,
@@ -239,6 +251,29 @@ impl Workspace {
             Some(Err(e)) => (Default::default(), Some(format!("no link rules ({e}); run tools/export-rcdb-links.ps1"))),
             None => (Default::default(), Some("no per-user data folder for the link rules".into())),
         };
+        // Help is optional: without it fields simply have no help text.
+        let help = rcdb.help_catalog().ok();
+        let otherwise = crate::visibility::shown_otherwise(config.as_ref());
+        let raw_lists: Vec<&str> = crate::lists::list_files().collect();
+        let flags_path = match options_path {
+            Some(p) => Some(p.with_file_name("visibility.json")),
+            None => hytera_codeplug::param_visibility::ParamVisibility::default_path(&version),
+        };
+        let flags = flags_path
+            .and_then(|p| hytera_codeplug::param_visibility::ParamVisibility::load(&p).ok())
+            .filter(|f| f.rcdb_version == version);
+        let model = hytera_codeplug::models::ModelRules::default_path(&version)
+            .and_then(|p| hytera_codeplug::models::ModelRules::load(&p).ok())
+            .filter(|r| r.rcdb_version == version)
+            .zip(crate::model_number(&saved.manifest))
+            .map(|(r, m)| r.for_model(m));
+        let sources = crate::visibility::Sources {
+            flags: flags.as_ref(),
+            model_visible: model.as_ref().map(|m| &m.visible),
+            help: help.as_ref(),
+            ui: ui.as_ref(),
+        };
+        let hidden = crate::visibility::classify(&layout, &base, &sources, &links, &otherwise, &raw_lists);
         Ok(Workspace {
             folder: folder.to_path_buf(),
             saved,
@@ -251,6 +286,8 @@ impl Workspace {
             refs_note,
             rules,
             rules_note,
+            help,
+            hidden,
             links,
             working: base.clone(),
             view: base.clone(),
@@ -353,6 +390,9 @@ impl Workspace {
         if let Some(r) = self.restriction(at) {
             bail!("{} cannot be changed: {}", at.key, r.reason);
         }
+        if let Some(h) = self.hidden.get(&def.id) {
+            bail!("{} cannot be changed here: {}", at.key, h.reason);
+        }
         let value = match (self.reference_choices(at), self.reference_names(at)) {
             (Some(choices), Some(names)) => match crate::refs::parse(&choices, text) {
                 Some(raw) => Value::from(raw),
@@ -403,6 +443,19 @@ impl Workspace {
             map.insert(at.key.clone(), value);
             Ok(())
         })
+    }
+
+    /// The pending edits as they are now, to go back to with [`Workspace::restore`] (for actions
+    /// made of several edits that must all succeed, and for previews).
+    pub fn checkpoint(&self) -> Checkpoint {
+        Checkpoint { working: self.working.clone(), view: self.view.clone(), pending: self.pending.clone() }
+    }
+
+    /// Go back to the pending edits of `checkpoint` (taken from this workspace).
+    pub fn restore(&mut self, checkpoint: Checkpoint) {
+        self.working = checkpoint.working;
+        self.view = checkpoint.view;
+        self.pending = checkpoint.pending;
     }
 
     /// Drop all pending edits.
@@ -513,6 +566,35 @@ impl Workspace {
             Ok(())
         })?;
         Ok(position)
+    }
+
+    /// Reset every field of the channel at view position `position` to CPS's channel template
+    /// (`QEU_C_Template_DChannel` / `…AChannel`, the record CPS copies when it adds a channel), so
+    /// the channel is as if newly added but keeps its number (and so every reference to it).
+    pub fn reset_channel(&mut self, kind: ChannelKind, position: usize) -> Result<()> {
+        let template_name = kind.file().replacen("QEU_C_", "QEU_C_Template_", 1);
+        let template = self
+            .view
+            .iter()
+            .find(|f| f.name == template_name)
+            .and_then(|f| f.blocks.first())
+            .and_then(|b| b.records.first())
+            .and_then(|r| r.fields.clone())
+            .with_context(|| format!("this configuration has no {template_name}"))?;
+        self.update(|w| {
+            let file = w.iter_mut().find(|f| f.name == kind.file()).context("no channel list")?;
+            let fields = file.blocks[0]
+                .records
+                .get_mut(position)
+                .and_then(|r| r.fields.as_mut())
+                .with_context(|| format!("there is no {kind:?} channel {}", position + 1))?;
+            for (key, value) in template.0 {
+                if let Some(slot) = fields.0.get_mut(&key) {
+                    *slot = value;
+                }
+            }
+            Ok(())
+        })
     }
 
     /// Remove the channel at view position `position`. Zone members pointing to it are removed and

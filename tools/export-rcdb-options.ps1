@@ -10,7 +10,8 @@
 
   Output: options.json { rcdb_version, source, params: [ { id, name, unit, options: [ { variant, index, range } ] } ] },
   ui.json (CPS's screen tree) and models.json (model-number rules: conditions, ranges, defaults,
-  visible, enable, ui_conditions, ui_links; rows as arrays), all in the same folder.
+  visible, enable, ui_conditions, ui_links; rows as arrays) and visibility.json (per parameter: CPS's
+  `visible` value and `delete_flag`, rows [id, visible, delete_flag]), all in the same folder.
   `range` is CPS's text, e.g. "RAM:0,UI:High" or "RAM:[3,99],UI:[15,495],Step:1"; `variant` is CPS's
   `different_version` (0 = always; other values are model/firmware variants).
 
@@ -115,6 +116,19 @@ try {
     # Screen parts shown/hidden by model number (meaning of link types not yet confirmed).
     $models.ui_conditions = Get-Table "SELECT model_number_group_id, start_index, length, value, releted_id, related_linkType FROM ModelNumberUIMainGroup ORDER BY model_number_group_id, id" @("i", "i", "i", "s", "i", "i")
     $models.ui_links = Get-Table "SELECT model_number_group_id, link_type, relatedUI_id, related_property_type, property_value FROM ModelNumberUILink ORDER BY model_number_group_id, link_id" @("i", "i", "i", "i", "s")
+
+    # Which parameters CPS shows: Param.visible (CPS's ParamVisible enum: 0 shown, 1 never, 2 internal build
+    # only, 3-6 RVM variants; the external build shows 0, 3, 4) and Param.delete_flag (shown only when 0).
+    # See docs/research-cps-visibility.md. One row per layout id, the delete_flag = 0 row first (as above).
+    $visibility = [ordered]@{ rcdb_version = $version; source = "XMLToolCompactData.sdf ($CpsDir)" }
+    $seen = @{}
+    $rows = New-Object System.Collections.Generic.List[object]
+    foreach ($row in (Get-Table "SELECT id, visible, delete_flag FROM Param ORDER BY id, delete_flag, param_id" @("i", "i", "i"))) {
+        if ($seen.ContainsKey($row[0])) { continue }
+        $seen[$row[0]] = $true
+        $rows.Add($row)
+    }
+    $visibility.params = $rows
     $conn.Close()
 }
 finally {
@@ -144,3 +158,8 @@ $modelsFile = Join-Path (Split-Path $OutFile) "models.json"
 $modelsJson = $models | ConvertTo-Json -Depth 4 -Compress
 [IO.File]::WriteAllText($modelsFile, $modelsJson, (New-Object System.Text.UTF8Encoding($false)))
 Write-Output "Exported model-number rules ($($models.conditions.Count) conditions, $($models.ranges.Count) ranges, $($models.defaults.Count) defaults, $($models.visible.Count) visibility rows) to $modelsFile"
+
+$visibilityFile = Join-Path (Split-Path $OutFile) "visibility.json"
+$visibilityJson = $visibility | ConvertTo-Json -Depth 4 -Compress
+[IO.File]::WriteAllText($visibilityFile, $visibilityJson, (New-Object System.Text.UTF8Encoding($false)))
+Write-Output "Exported which parameters CPS shows ($($visibility.params.Count) parameters) to $visibilityFile"

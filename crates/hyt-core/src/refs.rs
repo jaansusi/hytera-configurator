@@ -9,7 +9,8 @@
 //!
 //! One reference is not in CPS's configuration and stays built in (inferred): a digital channel's
 //! `Scan List Roam List` points into the scan lists or the roam lists depending on its
-//! `Use Scan or Roam List` (0 None, 1 scan, 2 roam), 1-based, 0 = None.
+//! `Use Scan or Roam List` (0 None, 1 scan, 2 roam), 1-based, 0 = None. Another (inferred, open
+//! question 5e): a digital channel's `Encrypt Key` names a key of the key list (242), 1-based, 0 = None.
 
 use hytera_codeplug::decode::{DecodedFile, keys};
 use hytera_codeplug::layout::{FieldType, Layout};
@@ -155,6 +156,24 @@ impl References {
                     scan: Box::new(lists_target(layout, links, scan, 1)),
                     roam: Box::new(lists_target(layout, links, roam, 1)),
                 },
+                special: vec![(0, "None".into())],
+                no_pick: None,
+            });
+        }
+        // Not in CPS's configuration (inferred, open question 5e): a digital channel's
+        // `Encrypt Key` is the 1-based record of the key list, 0 = None, named by its alias.
+        if let (Some(dch), Some(keys)) = (file_id(files, "QEU_C_DChannel"), file_id(files, crate::edit::KEY_LIST_FILE))
+            && let Some(block) = layout.block_ids(dch).first().copied()
+            && let Some(key_block) = layout.block_ids(keys).first().copied()
+            && !specs.iter().any(|s| s.file == dch && s.key == "Encrypt Key")
+            && key_of(layout, dch, block, 37).as_deref() == Some("Encrypt Key")
+        {
+            let name = key_of(layout, keys, key_block, 6134).unwrap_or_else(|| "Key Alias".into());
+            specs.push(Spec {
+                file: dch,
+                block,
+                key: "Encrypt Key".into(),
+                target: Target::Rows { file: keys, block: key_block, name, start: 1, filter: None },
                 special: vec![(0, "None".into())],
                 no_pick: None,
             });

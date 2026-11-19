@@ -165,7 +165,8 @@ fn plan(ws: &Workspace) -> Vec<PlanTopic> {
     let Some(ui) = &ws.ui else { return Vec::new() };
     let excluded = profile(ws).write_excluded_files;
     let model = model_overrides(ws);
-    let hidden = |id: u32| model.as_ref().is_some_and(|m| m.visible.get(&id) == Some(&false));
+    // Model-number visibility is part of the field classification (`crate::visibility`), which also
+    // knows where CPS shows a field the model rules hide (Feature in Subscriber mirrors the licences).
     let disabled = |id: u32| model.as_ref().is_some_and(|m| m.enable.get(&id) == Some(&false));
     let mut seen: HashSet<(u16, u16, String)> = HashSet::new();
     let mut topics: Vec<PlanTopic> = Vec::new();
@@ -186,7 +187,7 @@ fn plan(ws: &Workspace) -> Vec<PlanTopic> {
             let mut settings = Vec::new();
             for &id in &g.params {
                 for def in ws.layout.find(id) {
-                    if def.block_type != 0 || !ws.base().iter().any(|f| f.id == def.file_id) || hidden(def.id) {
+                    if def.block_type != 0 || !ws.base().iter().any(|f| f.id == def.file_id) {
                         continue;
                     }
                     let Some(key) = key_of(ws, def) else { continue };
@@ -283,17 +284,35 @@ pub fn topic(ws: &Workspace, id: &str) -> Option<Topic> {
     plan(ws).iter().find(|t| slug(t.title) == id).map(|t| render_topic(ws, t, &|_, _, _, _| true))
 }
 
-/// Settings whose name (or section, group or topic) contains every word of `query`.
+/// Settings whose name (or section, group, topic or CPS's help text) contains every word of `query`.
 pub fn search(ws: &Workspace, query: &str) -> Vec<Topic> {
     let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     if words.is_empty() {
         return Vec::new();
     }
-    let keep = |t: &PlanTopic, sec: &PlanSection, g: &PlanGroup, s: &PlanSetting| {
-        let hay = format!("{} {} {} {} {}", t.title, sec.title, g.title, s.label, s.at.key).to_lowercase();
+    let all = |hay: String| {
+        let hay = hay.to_lowercase();
         words.iter().all(|w| hay.contains(w.as_str()))
     };
-    plan(ws).iter().map(|t| render_topic(ws, t, &keep)).filter(|t| !t.sections.is_empty()).collect()
+    let by_name = |t: &PlanTopic, sec: &PlanSection, g: &PlanGroup, s: &PlanSetting| {
+        all(format!("{} {} {} {} {}", t.title, sec.title, g.title, s.label, s.at.key))
+    };
+    let by_help = |t: &PlanTopic, sec: &PlanSection, g: &PlanGroup, s: &PlanSetting| {
+        !by_name(t, sec, g, s)
+            && ws.def(&s.at).and_then(|d| crate::tables::help_for(ws, d)).is_some_and(|h| {
+                all(format!("{} {}", s.label, [h.text, h.notes, h.options].into_iter().flatten().collect::<Vec<_>>().join(" ")))
+            })
+    };
+    // Name matches first, then settings found only in CPS's description of them.
+    let plan = plan(ws);
+    let named = plan.iter().map(|t| render_topic(ws, t, &by_name));
+    let described = plan.iter().map(|t| {
+        let mut topic = render_topic(ws, t, &by_help);
+        let found = "Found in CPS's description of these settings.";
+        topic.note = Some(topic.note.take().map_or(found.into(), |n| format!("{found} {n}")));
+        topic
+    });
+    named.chain(described).filter(|t| !t.sections.is_empty()).collect()
 }
 
 /// `Settings › Topic › Section` for a setting shown here (for the change list).
@@ -307,6 +326,19 @@ pub fn place_of(ws: &Workspace, file: u16, block: u16, key: &str) -> Option<Stri
                 .then(|| format!("Settings › {} › {}", t.title, sec.title))
         })
     })
+}
+
+/// Every setting the settings view shows, by (file, block, key): its label and why it is
+/// read-only, if it is. Settings CPS hides for this radio are absent; so is everything when no
+/// screen structure is loaded.
+pub(crate) fn shown(ws: &Workspace) -> std::collections::HashMap<(u16, u16, String), (String, Option<&'static str>)> {
+    plan(ws)
+        .into_iter()
+        .flat_map(|t| t.sections)
+        .flat_map(|s| s.groups)
+        .flat_map(|g| g.settings)
+        .map(|s| ((s.at.file, s.at.block, s.at.key), (s.label, s.read_only)))
+        .collect()
 }
 
 /// The label CPS uses for a setting shown here.

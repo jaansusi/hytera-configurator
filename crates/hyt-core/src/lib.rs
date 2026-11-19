@@ -2,14 +2,17 @@
 //! transport: read, save/load folders, decode, edit, write.
 
 pub mod edit;
+pub mod licence;
 pub mod link_rules;
 pub mod lists;
+pub mod quick;
 pub mod refs;
 pub mod settings;
 pub mod sheet;
 pub mod tables;
 pub mod tpl;
 pub mod view;
+pub mod visibility;
 pub mod workspace;
 pub mod write_flow;
 
@@ -30,19 +33,29 @@ use hytera_proto::transport::Transport;
 use hytera_proto::{RadioInfo, Session};
 use serde::{Deserialize, Serialize};
 
-/// Human-readable labels for information items (partly inferred, see docs/protocol.md).
+/// Human-readable labels for information items (CPS's names from `G2CPS.Protocol.dll`
+/// `BaseInforItem`, see docs/protocol.md).
 pub fn item_label(id: u16) -> &'static str {
     match id {
-        item::MODEL_CODE => "model code",
+        item::MODEL_CODE => "model number",
         item::FIRMWARE_VERSION => "firmware version",
         item::RCDB_VERSION => "RCDB version",
-        0x0003 => "component version",
-        item::HARDWARE_VERSION => "hardware version",
-        0x000A => "radio ID / band (unconfirmed)",
+        0x0003 => "bootloader (L3) version",
+        item::HARDWARE_VERSION => "tuning data version",
+        0x0007 => "fixed string version",
+        0x0008 => "font version",
+        0x0009 => "image version",
+        0x000A => "TEI / ESN",
         item::SERIAL_NUMBER => "serial number",
         item::MODEL_NAME => "model name",
-        item::PRODUCT_TYPE => "product type",
-        0xFFF6 => "date",
+        0x0045 => "Bluetooth version",
+        0x0065 => "bootloader L2 version",
+        0x0071 => "fixed string languages",
+        0x0100 => "animation version",
+        licence::LICENCE_INFO_ITEM => "installed licences",
+        item::PRODUCT_TYPE => "board type",
+        0xFFF4 => "voice broadcast version",
+        0xFFF6 => "RCDB build date",
         _ => "",
     }
 }

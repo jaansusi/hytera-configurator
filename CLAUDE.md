@@ -74,6 +74,32 @@ on **COM3** (Prolific PL2303GC cable). Reference software: Hytera CPS V1.5.24.00
 - GUI "More ▾" menu (2026-11-19 night, offline only): CSV export/import of the table shown (pending changes + summary
   of refused cells) and CPS template export (what is shown, unsaved changes included) / import (for the open
   folder's radio, into a new folder that is then opened; warnings shown). Banner shows `model_note`.
+- Field help + Quick setup (2026-11-19, offline only): CPS's own help texts from `CPSParams.xlsx` (install
+  root; `hytera-codeplug/src/help.rs`, by field `Id`) on every column, shown behind a "?" in the GUI and
+  searched by the settings search (name matches first). GUI "Quick setup": 10 plain questions (name/ID,
+  language/clock, sounds, screen, key lock, VOX, battery saving, power and TX time limit on all channels, add a
+  channel), each answer = preset values (`hyt-core/src/quick.rs`); dry-run review, then applied all-or-nothing
+  as ordinary pending changes. Questions appear only where CPS shows and allows every field for the model.
+  A Start step offers "adjust what the radio has" or "start fresh" (each question preselects its recommended
+  answer, and all channels are replaced by a starter set: DMR 1–4 at 446.10625–446.14375 MHz + PMR 1–8,
+  low power; `STARTER` in `quick.rs`). Replacing reuses existing channels in place after resetting them to
+  CPS's channel template (`Workspace::reset_channel`), removes extras from the end and rebuilds zone 1, so
+  references to channel 1 (current channel, scan list) stay valid.
+- Encryption checked with the owner in CPS (2026-11-19, `captures/cps-encryption_2026-11-19/`): CPS shows no
+  encryption at all on this radio (Basic Encryption licence Off). `hyt` now: channel `Encrypt Key` names keys
+  of the key list (242) and `apply_edits` refuses a missing key; key values are secret like passwords; fields
+  CPS hides are classified (`hyt-core/src/visibility.rs`) as *licence* (feature not licensed) or *internal*
+  (CPSParams.xlsx visibility, or on no CPS screen), read-only, and hidden in the GUI unless switched on (More
+  menu, two separate switches). A research agent then read CPS's code (`docs/research-cps-visibility.md`):
+  *internal* now follows CPS's database (`Param.visible`/`delete_flag`, exported to `visibility.json`; xlsx only as
+  fallback) and *licence* the real rule (`ParamTemplate.config` LinkType 20125: Roam, Basic Encryption, Two Tone;
+  incl. whole lists). Digital channel 1 shows exactly CPS's 22 fields, Feature Control its 4 flags. Fixed: model
+  rules' `is_visible` was read inverted (`models.rs`). Analysis scripts in `tools/cps-analysis/`.
+- Licences (2026-11-19, offline only): CPS installs licences with its Authorization button from a Hytera `.zip`
+  (readme XML + MD5 + per-serial `.fcr`, pushed with `E100` secure-file commands); the radio reports installed
+  licences in identify item `0x0200` (BP515: none). CPS V1.5.24 refuses Basic Encryption (1509) for the BP515 U1.
+  `hyt licence check <zip> --radio <read>` repeats CPS's checks; `hyt licence status` shows item `0x0200` and the
+  flags (`hyt-core/src/licence.rs`). The owner has ordered licences from Hytera (due about 2026-11-26).
 - Next: owner review (`docs/todo-owner.md`); CPS recordings for zone/contact/list-member add/remove and
   referenced-channel removal; merge branch `unattended-2026-11-19` after review.
 
@@ -85,10 +111,14 @@ older ones need `%USERPROFILE%\.cargo\bin` added.
 | Crate | Role |
 |---|---|
 | `crates/hytera-proto` | Transports (serial, replay of `captures/*.jsonl`), link frames (resends, extra `00` byte), `0x0A0B` packets, `Session` (identify, read files, write files) |
-| `crates/hytera-codeplug` | RCDB file lists, `TableLink.xml`, CPS write order, file header + CRC rules + `prepare_for_write` (`container`), block structure (`structure`), field layouts from `RcdbJsons` (`layout`), field codec (`value`), whole-file decode/apply (`decode`), CPS's reference config `DataValidationConfig.config`/`ComplexRuleConfig.Config` (`validation`), link rules from `links.json` (`link_rules`) |
+| `crates/hytera-codeplug` | RCDB file lists, `TableLink.xml`, CPS write order, file header + CRC rules + `prepare_for_write` (`container`), block structure (`structure`), field layouts from `RcdbJsons` (`layout`), field codec (`value`), whole-file decode/apply (`decode`), CPS's reference config `DataValidationConfig.config`/`ComplexRuleConfig.Config` (`validation`), CPS's help
+texts `CPSParams.xlsx` (`help`), which parameters CPS shows (`param_visibility`, from `visibility.json`), link rules from `links.json` (`link_rules`) |
 | `crates/hytera-models` | Model profiles (`BP515` incl. files never written; read-only `GENERIC_G2` fallback) |
-| `crates/hyt-core` | Shared by CLI and GUI: `src/lib.rs` (read/save/load folders, plan/verify writes, `load_options`), `view.rs` (labelled output, `is_secret`), `edit.rs` (labels ↔ raw, `apply_edits`, diff), `write_flow.rs` (backup → same-radio check → write → wait for restart → verify), `workspace.rs` (open folder + validated pending edits incl. channel add/remove and zone member actions, save-as), `tables.rs` (GUI tables, record detail, change list), `lists.rs` (list editors: RX group/scan/roam lists and other one-level lists as `list:<file>` tables, members read-only by name), `refs.rs` (reference fields by name, from CPS's `DataValidationConfig.config`; built-in fallback), `link_rules.rs` (CPS's link rules: disabled fields with reason, forced values), `sheet.rs` (tables as CSV, files + suggested names), `tpl.rs` (CPS `.tpl` import/export incl. `export_workspace`, `import_file`); tests: `replay_read.rs`, `replay_write.rs` (CPS recordings), `decode_roundtrip.rs`, `edit_values.rs`, `add_records.rs`, `delete_channel.rs`, `workspace_tables.rs` (GUI model + write-flow refusals), `workspace_structure.rs` (GUI add/remove vs CPS recordings, renumbering, references), `list_editors.rs` (list tables, member names, value edits, change list), `references.rs` (CPS references, special values, link rules) |
-| `crates/hyt-cli` | `hyt` binary (`ports`, `info`, `read`, `write`, `decode [--labels]`, `show [--all]`, `apply`, `diff`, `csv`, `tpl`); only argument parsing and printing (`src/main.rs`) |
+| `crates/hyt-core` | Shared by CLI and GUI: `src/lib.rs` (read/save/load folders, plan/verify writes, `load_options`), `view.rs` (labelled output, `is_secret`), `edit.rs` (labels ↔ raw, `apply_edits`, diff), `write_flow.rs` (backup → same-radio check → write → wait for restart → verify), `workspace.rs` (open folder + validated pending edits incl. channel add/remove and zone member actions, save-as), `tables.rs` (GUI tables, record detail, change list), `lists.rs` (list editors: RX group/scan/roam lists and other one-level lists as `list:<file>` tables, members read-only by name), `refs.rs` (reference fields by name, from CPS's `DataValidationConfig.config`; built-in fallback), `link_rules.rs` (CPS's link rules: disabled fields with reason, forced values), `sheet.rs` (tables as CSV, files + suggested names), `tpl.rs` (CPS `.tpl` import/export incl. `export_workspace`, `import_file`), `licence.rs` (licence package checks like CPS's Authorization, installed licences from item `0x0200`), `quick.rs` (beginner quick
+setup: questions → preset values, dry run / all-or-nothing apply), `visibility.rs` (fields CPS hides: licence /
+internal); tests: `visibility.rs` (against CPS screenshots); tests: `quick_setup.rs` (questions, presets,
+channel add, help texts), `replay_read.rs`, `replay_write.rs` (CPS recordings), `decode_roundtrip.rs`, `edit_values.rs`, `add_records.rs`, `delete_channel.rs`, `workspace_tables.rs` (GUI model + write-flow refusals), `workspace_structure.rs` (GUI add/remove vs CPS recordings, renumbering, references), `list_editors.rs` (list tables, member names, value edits, change list), `references.rs` (CPS references, special values, link rules) |
+| `crates/hyt-cli` | `hyt` binary (`ports`, `info`, `read`, `write`, `decode [--labels]`, `show [--all]`, `apply`, `diff`, `csv`, `tpl`, `licence check|status`); only argument parsing and printing (`src/main.rs`) |
 | `crates/hyt-gui` | Tauri 2 desktop app `hyt-gui [folder]`: `src/commands.rs` (commands on `hyt-core`, radio jobs on a blocking thread with `progress` events), `ui/` (static `index.html`, `app.js`, `style.css`; no npm build), `tauri.conf.json`, `capabilities/`, `icons/` (from `tools/make_icon.py`) |
 
 - Test: `cargo test --workspace` (replay test skips itself if `captures/` or the CPS install is missing).
@@ -123,10 +153,12 @@ older ones need `%USERPROFILE%\.cargo\bin` added.
 | `docs/capture-howto.md` | How to record CPS talking to the radio and decode the recording |
 | `docs/open-questions.md` | Unanswered questions, what each blocks, how to answer it, resolved log |
 | `docs/plan.md` | Phased plan for the app, risks, decisions pending |
+| `docs/research-cps-visibility.md` | How CPS decides which settings to show (database flags, model rules, licence rule), from its code |
 
 Files: `captures/` (recordings + files read from the radio; **private**, includes the radio's whole
 configuration), `tools/` (recorder `serial_tap.js` + `tap_runner.py` + `start_tap.cmd`, decoder
-`parse_capture.py`, GUI driver `gui-drive/`, icon generator `make_icon.py`), `.venv` (Python with `frida` 17.27.0 and `pyserial`; see `requirements.txt`).
+`parse_capture.py`, GUI driver `gui-drive/`, icon generator `make_icon.py`, read-only CPS code/database analysis
+`cps-analysis/`), `.venv` (Python with `frida` 17.27.0 and `pyserial`; see `requirements.txt`).
 
 ## Key facts at a glance
 

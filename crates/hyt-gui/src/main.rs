@@ -62,6 +62,8 @@ fn main() {
             commands::get_settings_index,
             commands::get_settings_topic,
             commands::search_settings,
+            commands::get_quick_setup,
+            commands::apply_quick_setup,
             commands::add_zone_member,
             commands::remove_zone_member,
             commands::move_zone_member,

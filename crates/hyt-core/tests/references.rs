@@ -54,6 +54,7 @@ fn references_come_from_cps_config() {
         fields,
         [
             "3/1 Emergency System",
+            "3/1 Encrypt Key",
             "3/1 Location Info Revert Channel",
             "3/1 Phone System",
             "3/1 RRS Channel",
@@ -165,6 +166,9 @@ fn quick_gps_forces_revert_channels_to_none() {
     }
     // CPS rule 290: Quick GPS on -> RRS Channel and Location Info Revert Channel set to 65535
     // (None) and greyed out. Start from an RRS channel set, so the forced value shows.
+    // CPS hides Quick GPS itself on this radio (delete_flag 1, tests/visibility.rs); this test is
+    // about the link rule engine, so the visibility classification is switched off here.
+    ws.hidden.clear();
     let rrs = detail(&ws, "digital", 0, "RRS Channel").cell.field.unwrap();
     ws.set_value(&rrs, "HYT Test 1").unwrap();
     let quick = detail(&ws, "digital", 0, "Quick GPS").cell.field.unwrap();
@@ -208,4 +212,30 @@ fn without_link_rules_nothing_is_disabled() {
     let analog = table(&plain, "analog").unwrap();
     assert!(analog.rows.iter().all(|r| r.cells.iter().all(|c| c.disabled.is_none())));
     std::fs::remove_dir_all(&missing).unwrap();
+}
+
+/// Open question 5e: with an empty key list (242), a channel's Encrypt Key can only be None.
+#[test]
+fn encrypt_key_names_only_existing_keys() {
+    let Some(ws) = open() else { return };
+    // Shown by name, and only None can be chosen (the GUI does not offer it at all on this radio:
+    // it needs the Basic Encryption licence, see tests/visibility.rs).
+    let field = detail(&ws, "digital", 0, "Encrypt Key");
+    assert_eq!(field.cell.text, "None");
+    assert_eq!(options_of(&field.cell), ["None"], "the key list is empty");
+    // Edits that do not go through the GUI (hyt apply) cannot point at a key that does not exist,
+    // but may still switch a channel's encryption on.
+    let saved = hyt_core::load_read(&ws.folder).unwrap();
+    let with = |encrypt: i64, key: i64| {
+        let mut edits = ws.edit_form().to_vec();
+        let dch = edits.iter_mut().find(|f| f.name == "QEU_C_DChannel").unwrap();
+        let fields = &mut dch.blocks[0].records[0].fields.as_mut().unwrap().0;
+        fields.insert("Encrypt".into(), serde_json::json!(encrypt));
+        fields.insert("Encrypt Key".into(), serde_json::json!(key));
+        hyt_core::edit::apply_edits(&saved, &ws.layout, ws.options.as_ref(), ws.links(), edits)
+    };
+    let err = with(1, 3).unwrap_err();
+    assert!(format!("{err:#}").contains("key 3 does not exist (the radio's key list is empty)"), "{err:#}");
+    let (_, changes) = with(1, 0).unwrap();
+    assert!(changes.iter().any(|c| c.key == "Encrypt"));
 }

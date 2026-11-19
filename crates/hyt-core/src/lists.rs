@@ -11,7 +11,7 @@ use hytera_codeplug::decode::DecodedFile;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::tables::{Cell, Column, Editor, RecordRef, Row, Table, cell, channel_alias, column, display, file};
+use crate::tables::{Cell, Column, RecordRef, Row, Table, cell, channel_alias, column, display, file};
 use crate::workspace::{FieldRef, Workspace};
 
 /// How the members of a two-level list are named.
@@ -212,6 +212,9 @@ pub struct ListInfo {
     pub title: String,
     pub rows: usize,
     pub capacity: usize,
+    /// Why CPS hides the whole list (a licence the radio does not have), if it does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<crate::visibility::Hidden>,
 }
 
 fn spec(id: &str) -> Option<&'static ListSpec> {
@@ -224,12 +227,23 @@ fn writable(ws: &Workspace, file: &DecodedFile) -> bool {
     !crate::settings::profile(ws).write_excluded_files.contains(&file.id)
 }
 
+/// The files of the list editors (their raw values are shown as they are).
+pub(crate) fn list_files() -> impl Iterator<Item = &'static str> {
+    LISTS.iter().map(|s| s.file)
+}
+
 /// The lists the configuration has, in display order, with their sizes.
 pub fn index(ws: &Workspace) -> Vec<ListInfo> {
     LISTS
         .iter()
-        .filter_map(|s| table(ws, &format!("{ID_PREFIX}{}", s.file)))
-        .map(|t| ListInfo { id: t.id, title: t.title, rows: t.rows.len(), capacity: t.capacity })
+        .filter_map(|s| Some((s, table(ws, &format!("{ID_PREFIX}{}", s.file))?)))
+        .map(|(s, t)| ListInfo {
+            id: t.id,
+            title: t.title,
+            rows: t.rows.len(),
+            capacity: t.capacity,
+            hidden: crate::visibility::hidden_file(ws.view(), s.file),
+        })
         .collect()
 }
 
@@ -320,7 +334,7 @@ pub fn table(ws: &Workspace, id: &str) -> Option<Table> {
     let mut columns: Vec<Column> = spec.columns.iter().map(|(k, t)| column(ws, f.id, block.id, k, t)).collect();
     if members_file.is_some() {
         let title = if spec.members.is_some_and(|(_, k)| k == Members::Contacts) { "Contacts" } else { "Channels" };
-        columns.push(Column { key: "members".into(), title: title.into(), unit: String::new(), editor: Editor::ReadOnly });
+        columns.push(Column::computed("members", title));
     }
     let rows: Vec<Row> = (0..block.records.len())
         .map(|record| {

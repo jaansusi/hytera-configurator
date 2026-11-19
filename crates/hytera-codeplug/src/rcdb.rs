@@ -13,8 +13,9 @@ pub const DEFAULT_CPS_DATA_DIR: &str =
 pub const RCDB_FOLDERS: [&str; 3] = ["RcdbJsons", "RcdbXmls", "RCDB"];
 
 /// CPS configuration files in the install's root that hyt reads (references, see
-/// [`crate::validation`]); copied by [`import`] when present.
-pub const RCDB_FILES: [&str; 2] = [crate::validation::VALIDATION_FILE, crate::validation::COMPLEX_RULE_FILE];
+/// [`crate::validation`]; help texts, see [`crate::help`]); copied by [`import`] when present.
+pub const RCDB_FILES: [&str; 3] =
+    [crate::validation::VALIDATION_FILE, crate::validation::COMPLEX_RULE_FILE, crate::help::HELP_FILE];
 
 /// The per-user copy of CPS's RCDB data made by [`import`] (`<data dir>/cps`).
 pub fn user_copy_dir() -> Option<PathBuf> {

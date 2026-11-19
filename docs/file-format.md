@@ -105,7 +105,7 @@ models in `ModelNumber.csv`.
 | `ModelNumberMainGroup` | 1,070 | Conditions: `model_number_group_id`, `start_index`, `length`, `value` (comma-separated, trailing comma, e.g. `U1,` or `P,D,`), `param_id` (the same for all rows of a group); `link_type` always 0 |
 | `ModelNumberRangeGroupLink` | 2,054 per language | `default_group_id` → allowed values for `param_id`: same `range_value` text and `Index` order as `DefaultRangeValue`; `prefix` always empty |
 | `ModelNumberDefaultGroupLink` | 346 | Default per group and parameter (`default_en`), e.g. `429075000` for RX/TX frequency on U1, `400-470` for Comm_Basic "Frequency Range" |
-| `ModelNumberVisibleGroupLink` | 379 | `is_visible` 0/1 per group and parameter |
+| `ModelNumberVisibleGroupLink` | 379 | `is_visible` per group and parameter: CPS's `ParamVisible` value (0 = shown, 1 = never, 2 = internal build only, …) that **replaces** `Param.visible` (observed in CPS's code 2026-11-19, [research-cps-visibility.md](research-cps-visibility.md)). `hyt` read it the wrong way round until then (non-zero = visible) |
 | `ModelNumberEnableGroupLink`, `ModelNumberDescription`, `ProductModelNumberList`, `LinkModelNumber` | 0 | empty in this CPS version |
 | `ModelNumberTypeRule` | 1 | `RuleType 0`, `ModelRuleType 0` (inferred: `G2Terminal` in `Config\ModelNumberRuleTypeInfo.xml`, i.e. the "XML" rule file, not the RVM one) |
 | `ModelNumberUIMainGroup` / `ModelNumberUILink` | 125 / 76 | The same kind of conditions for screen parts (`related_linkType`/`link_type` 1 or 2, `relatedUI_id`, `property_value` 0/1). Meaning of the link types **unknown** (the ids fit `UiPage`/`UiGroup`/`UiCategory` inconsistently); exported, not used |
@@ -302,7 +302,62 @@ stored). `Workspace::set_value` refuses such fields and, when a controlling fiel
 forces (PointValue) in the same record or a single-record block, if the catalogue allows them. *Not supported*:
 the 3 complex rules (zone/scan/roam members follow channel renames), RangeValue results (none in V1.5.24.000),
 rules whose controlling field is in a different list than the dependent field, forced values into other lists
-(e.g. digital `Encrypt` off → each channel's encryption settings), and IsVisible as hiding (shown greyed instead).
+(e.g. rule 103: global digital `Encrypt` (1688) off greys the key list's Key Value/ID/Alias/Length in 242), and
+IsVisible as hiding (shown greyed instead). *Observed* in the SDF rules 103/134 (2026-11-19): the global `Encrypt`
+switch greys global encryption settings and key list fields; a channel's `Encrypt Key` is greyed while that
+channel's `Encrypt` is Off (rules 493/494).
+
+**More rules in `ParamTemplate.config`** (install root, 458 `<ComplexLink>` entries, *observed* 2026-11-19, not
+used by `hyt` yet): each has a `LinkType` number whose behaviour is implemented in CPS's code, plus initiative
+and passive parameters and Chinese comments describing the behaviour. Relevant ones:
+- LinkType 2010: when the global `Encrypt` (1688, block 5) is off, the digital channels' `Encrypt` (32),
+  `Encrypt Type` (33), `Random Key Encrypt` (35), `MultiKey Decrypt` (36) and `Encrypt Key` (37) are unavailable
+  and set to 0 (per the comment). So the SDF rules above are not the whole story: `hyt` today lets a channel's
+  `Encrypt` be On while the global switch is Off, which CPS would not.
+- LinkType 2078: `Encryption Control` (4599, block 5; Allow on the BP515) Forbid turns the global `Encrypt` off and
+  greys it; XPT channel encryption follows the global switch and `Encrypt Type`.
+- LinkType 20125 "授权关联" (authorization): links the licence flags of `Comm_Basic` block 902 (Pure Digital,
+  Pure Analog, Priority Interrupt, Roam, Remote Monitor, Radio Disable Enable, Two Tone, Basic Encryption) and
+  `isReadTemplate` (6616). What it does is in code; see the next point.
+
+*Observed* on CPS's screens for the BP515 (2026-11-19, `captures/cps-encryption_2026-11-19/`): Feature Control
+shows only Two Tone, Pure Analog, Pure Digital and Roam (no Basic Encryption, Priority Interrupt, Remote Monitor,
+Radio Disable, HDC1200), and Conventional › Digital Setting has only Dial Setting, RRS and Voice: **no Encrypt
+page**. Searching CPS for "encrypt" finds nothing, and digital channel 1's edit dialog has no encryption fields.
+*Inferred*: CPS hides encryption because the radio's licence has `Basic Encryption` = Off (rule 20125).
+`hyt`'s settings view still shows the Encrypt page and those licence flags.
+
+What CPS shows in the digital channel dialog, compared with its screen tree (`ui.json` group 205: Basic Setting,
+Frequency, TX, RX, Encryption) and the visibility column of `CPSParams.xlsx` (column G: visible in the
+internal and external builds / internal build only / neither; CPS as installed is the external build), *observed*
+2026-11-19 (`captures/cps-encryption_2026-11-19/digital-channel-1.png`):
+- Hidden and marked "neither" in the xlsx (so the xlsx explains them): Channel Type, Channel Mode Status,
+  TDMADirectMode, Phone System, Encrypt Type, Random Key Encrypt, MultiKey Decrypt; also the global Encrypt Type,
+  Encryption Control and the menu's Encrypt/EncryptList.
+- Hidden although the xlsx says "both" (so something else hides them; *inferred*: licence flags and CPS code):
+  Encrypt, Encrypt Key (Basic Encryption licence Off), Priority Interrupt Encode/Decode, Reliable Priority Interrupt
+  Transmit (Priority Interrupt licence Off), IP Multi Site Connect, Auto Start Roam (Roam licence Off), Special
+  Frame, Quick GPS, Enhanced Channel Access, In Call TX Admit, Emergency System, Location Info Revert Channel.
+- Model-number rules (`models.json`) hide none of these.
+
+**Answered (2026-11-19, [research-cps-visibility.md](research-cps-visibility.md), observed in CPS's code):** the
+"something else" is CPS's parameter database. A field is shown by CPS as installed (external build) only when
+`Param.visible` (replaced by a matching model-number row) is 0, 3 or 4 and `Param.delete_flag` is 0; the xlsx
+column is only a help document (it disagrees for 138 BP515 fields). The licence rule (LinkType 20125,
+`AuthorizationRelationRule`) hides fields, pages and categories only for Roam, Basic Encryption and Two Tone.
+The list above was partly wrong: Priority Interrupt Encode/Decode, Reliable PI Transmit and Auto Start Roam are
+hidden by the database, not by a licence.
+
+`hyt` follows this (`hyt-core/src/visibility.rs`): *internal* = the database rule (`visibility.json`, exported
+by `tools/export-rcdb-options.ps1`; the xlsx only as fallback) or on no CPS screen; *licence* = the fields and
+whole files (Roam lists; 2-Tone and HDC1200 lists = category Analog Service) of an unlicensed Roam, Basic
+Encryption or Two Tone. "Feature in Subscriber" (6636–6643) is shown where the matching licence flag is.
+Both kinds are read-only and hidden in the GUI unless switched on (More menu). Exceptions to *internal*: the name
+files of list pairs (zone names etc.), the index/type fields of virtual parameters and dial-rule call IDs, and
+the files of `hyt`'s list editors (raw values shown as they are). Checked against CPS's screens: digital
+channel 1 shows exactly CPS's 22 fields, Feature Control exactly its 4 flags, and nothing about encryption.
+Not modelled: the option lists the licence rule narrows, the Pure Digital/Analog licences when On, and the
+values CPS forces at load.
 
 **List pairs and their members (2026-11-20):**
 

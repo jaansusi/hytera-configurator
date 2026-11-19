@@ -61,7 +61,9 @@ pub struct ModelOverrides {
     pub ranges: BTreeMap<u32, Vec<String>>,
     /// Default value text (raw number, e.g. `429075000`, or text such as `400-470`).
     pub defaults: BTreeMap<u32, String>,
+    /// Whether CPS (external build) shows the parameter for this model; replaces `Param.visible`.
     pub visible: BTreeMap<u32, bool>,
+    /// Whether the parameter is editable for this model (`is_enable` != 0; meaning not confirmed).
     pub enable: BTreeMap<u32, bool>,
 }
 
@@ -101,7 +103,11 @@ impl ModelRules {
             })
             .collect();
         rules.defaults = raw.defaults.into_iter().map(|(g, p, d)| ((g, p), d)).collect();
-        rules.visible = raw.visible.into_iter().map(|(g, p, v)| ((g, p), v != 0)).collect();
+        // `is_visible` is CPS's ParamVisible value, which replaces `Param.visible` (0 = shown): see
+        // [`crate::param_visibility::shown_by_external_build`]. Observed 2026-11-19: the BP515's rows set
+        // 0 for Pure Digital/Pure Analog/Roam/Two Tone, the four flags CPS's Feature Control shows.
+        rules.visible =
+            raw.visible.into_iter().map(|(g, p, v)| ((g, p), crate::param_visibility::shown_by_external_build(v))).collect();
         rules.enable = raw.enable.into_iter().map(|(g, p, v)| ((g, p), v != 0)).collect();
         Ok(rules)
     }
@@ -196,7 +202,7 @@ mod tests {
             "in CPS's index order"
         );
         assert_eq!(o.defaults.get(&7).map(String::as_str), Some("429075000"));
-        assert_eq!(o.visible.get(&38), Some(&true));
+        assert_eq!(o.visible.get(&38), Some(&false), "is_visible 1 = UnVisible");
         assert_eq!(o.visible.get(&929), None, "group 38 needs level 7");
         let other = r.for_model("58P10B00-1L0DAPU3U300000000CB000000000000-00000NN0000000000000000000000000-00040000");
         assert_eq!(other.ranges[&7][0], "RAM:[350000000,400000000],UI:[350.000000,400.000000],Step:5");

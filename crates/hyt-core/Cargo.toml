@@ -19,3 +19,4 @@ chrono.workspace = true
 uuid.workspace = true
 roxmltree.workspace = true
 crc32fast.workspace = true
+md5 = { package = "md-5", version = "0.10" }

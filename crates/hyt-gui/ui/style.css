@@ -275,6 +275,95 @@ dialog ul.refused li { margin: 2px 0; word-break: break-word; }
 dialog pre { white-space: pre-wrap; word-break: break-word; background: var(--head); padding: 8px; border-radius: 6px; max-height: 240px; overflow: auto; }
 code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
 
+/* Help texts: a "?" next to a field name shows CPS's description on request. */
+.fields .label { display: flex; align-items: center; gap: 4px; }
+.fields .label .label-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.help-btn {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  opacity: .75;
+}
+button.help-btn:hover:not(:disabled), button.help-btn.open { opacity: 1; color: var(--accent); border-color: var(--accent); }
+button.help-btn.open { background: var(--accent-soft); }
+.th-title { display: inline-flex; align-items: center; gap: 4px; }
+.help-text { font-size: 12px; line-height: 1.45; color: var(--text); white-space: pre-line; }
+.help-text p { margin: 0 0 6px; }
+.help-text strong { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 6px; }
+.help-text .help-source { color: var(--muted); font-size: 11px; margin: 4px 0 0; }
+.fields .help-text.inline { grid-column: 1 / -1; background: var(--head); border-left: 3px solid var(--accent); border-radius: 4px; padding: 6px 10px; margin: 0 0 4px; }
+.fields .help-text[hidden] { display: none; }
+.help-pop {
+  position: fixed;
+  z-index: 30;
+  width: 340px;
+  max-width: calc(100vw - 16px);
+  max-height: 50vh;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+}
+.help-pop[hidden] { display: none; }
+.help-pop-title { font-weight: 600; margin-bottom: 4px; }
+
+/* Fields CPS hides (licence-limited or internal), shown on request: greyed, read-only, tagged. */
+.menu button[role=menuitemcheckbox] { padding-left: 26px; position: relative; }
+.menu button[role=menuitemcheckbox].checked::before { content: '✓'; position: absolute; left: 9px; color: var(--accent); font-weight: 700; }
+.tag { flex: none; font-size: 10px; font-weight: 600; border-radius: 8px; padding: 0 5px; border: 1px solid; line-height: 14px; cursor: help; }
+.tag.licence { color: var(--changed-line); border-color: var(--changed-line); }
+.tag.internal { color: var(--muted); border-color: var(--muted); }
+.hidden-note { font-size: 12px; margin: 0 0 8px; }
+.hidden-note button.link { font-size: 12px; padding: 0 2px; }
+
+/* Quick setup */
+.quick-layout { display: flex; gap: 16px; align-items: flex-start; }
+.quick-steps { list-style: none; margin: 0; padding: 0; width: 190px; flex: none; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; }
+.quick-steps button { width: 100%; text-align: left; border: none; background: none; padding: 6px 10px 6px 26px; position: relative; }
+.quick-steps li.active button { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.quick-steps li button::before { content: ''; position: absolute; left: 9px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%; border: 1.5px solid var(--line); }
+.quick-steps li.done button::before { background: var(--ok); border-color: var(--ok); }
+.quick-body { flex: 1; min-width: 0; max-width: 680px; }
+.quick-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+.quick-card.wide { max-width: none; }
+.quick-card .grid { margin: 8px 0 12px; }
+.quick-intro { font-size: 14px; margin: 0 0 12px; }
+.quick-note { color: var(--muted); background: var(--head); border-radius: 6px; padding: 6px 10px; margin: 10px 0; }
+.quick-error { color: var(--danger); background: var(--danger-soft); border-radius: 6px; padding: 6px 10px; margin: 10px 0; white-space: pre-wrap; }
+.quick-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.quick-option { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.quick-option.chosen { border-color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 60%, transparent); }
+.quick-option-main { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.quick-option-main input { margin-top: 3px; }
+.quick-option-text { display: flex; flex-direction: column; gap: 2px; }
+.quick-option-text .note { margin: 0; }
+.quick-option-label { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.pill { font-size: 11px; font-weight: 600; color: var(--ok); border: 1px solid var(--ok); border-radius: 9px; padding: 0 6px; }
+.pill.recommended { color: var(--accent); border-color: var(--accent); }
+.quick-changes { margin: 6px 0 0 24px; }
+.quick-changes table.starter { min-width: 0; margin: 6px 0; }
+.quick-changes table.starter td.note { margin: 0; font-size: 12px; }
+.quick-changes summary { color: var(--accent); cursor: pointer; font-size: 12px; }
+.quick-changes .fields { margin-top: 6px; grid-template-columns: minmax(160px, 45%) 1fr; }
+.quick-fields { grid-template-columns: minmax(130px, 30%) 1fr; margin: 4px 0 8px; row-gap: 6px; }
+.quick-fields .field-hint { grid-column: 2; margin: -2px 0 4px; font-size: 12px; }
+.quick-fields .value input[type=text], .quick-fields .value select { max-width: 320px; }
+.quick-fields label.check { display: flex; gap: 6px; align-items: center; }
+.segmented { display: inline-flex; gap: 14px; }
+.segmented label { display: inline-flex; gap: 5px; align-items: center; }
+.quick-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+
 /* Keep the table header on one line; let it wrap as a whole on narrow windows. */
 .view-head { flex-wrap: wrap; row-gap: 6px; }
 .view-head h1, .view-head .actions button { white-space: nowrap; }

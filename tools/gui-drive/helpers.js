@@ -1,6 +1,6 @@
 // Helpers for tools/gui-drive/cdp.mjs steps: cell(row, col), col(title), edit(row, title, value), nav(title).
 const cell = (r, c) => document.querySelectorAll('#content tbody tr')[r].children[c + 1];
-const col = (title) => [...document.querySelectorAll('#content thead th')].findIndex(th => th.firstChild.textContent === title) - 1;
+const col = (title) => [...document.querySelectorAll('#content thead th')].findIndex(th => (th.querySelector('.th-title') || th).firstChild.textContent === title) - 1;
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function edit(r, title, value) {
   const td = cell(r, col(title));

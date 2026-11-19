@@ -417,6 +417,9 @@ pub fn apply_edits(
         }
         let checker = ValueCheck { layout, options, file: id, name: &name };
         let removable = CHANNEL_LISTS.iter().any(|(list, _)| *list == name);
+        if ENCRYPT_KEY_FILES.contains(&name.as_str()) {
+            check_encrypt_keys(saved, id, &name, &file_changes)?;
+        }
         for c in &file_changes {
             match (c.key.as_str(), &c.new) {
                 (REMOVED, _) if !c.position.contains('.') && !removable => {
@@ -458,6 +461,37 @@ pub fn apply_edits(
         check_consistency(saved, &files, layout, links)?;
     }
     Ok((files, all_changes))
+}
+
+/// Files whose records have a digital channel's `Encrypt Key` (the channel list and CPS's
+/// channel template, which new channels copy).
+const ENCRYPT_KEY_FILES: [&str; 2] = ["QEU_C_DChannel", "QEU_C_Template_DChannel"];
+/// The encryption key list (`QEU_C_E2EEKEYLIST`, 0 to 30 keys).
+pub(crate) const KEY_LIST_FILE: &str = "QEU_C_E2EEKEYLIST";
+
+/// A changed or added `Encrypt Key` must be 0 (None) or the number of a key in the key list
+/// (inferred: 1-based record of [`KEY_LIST_FILE`]; open question 5e). The catalogue allows 1..30
+/// whatever the list holds, so without this a channel could point at a key that does not exist.
+/// Values the radio already had are not checked, so an unchanged configuration can be written back.
+fn check_encrypt_keys(saved: &SavedRead, id: u16, name: &str, file_changes: &[Change]) -> Result<()> {
+    let keys = file_id(saved, KEY_LIST_FILE).and_then(|f| saved.files.get(&f)).and_then(|b| record_count(b)).unwrap_or(0);
+    for c in file_changes {
+        let value = match (c.key.as_str(), &c.new) {
+            ("Encrypt Key", v) => v.as_i64(),
+            (ADDED, Value::Object(fields)) => fields.get("Encrypt Key").and_then(Value::as_i64),
+            _ => None,
+        };
+        let Some(key) = value.filter(|k| *k != 0) else { continue };
+        if key < 0 || key as usize > keys {
+            let have = match keys {
+                0 => "the radio's key list is empty".to_string(),
+                1 => "the radio's key list has 1 key".to_string(),
+                n => format!("the radio's key list has {n} keys"),
+            };
+            bail!("file {id} ({name}) {} Encrypt Key: key {key} does not exist ({have}); choose None or an existing key", c.position);
+        }
+    }
+    Ok(())
 }
 
 fn record_count(bytes: &[u8]) -> Option<usize> {

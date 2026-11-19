@@ -64,8 +64,13 @@ fn settings_are_edited_and_listed_by_name() {
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].place, "Settings › General › Radio Alias");
     assert_eq!((changes[0].setting.as_str(), changes[0].old.as_str(), changes[0].new.as_str()), ("Radio Alias", "Radio 1", "Night Test"));
+    // The name match comes first; settings whose CPS description mentions it follow, marked.
     let hits = search(&ws, "radio alias");
-    assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].sections[0].groups[0].settings[0].label, "Radio Alias");
+    assert_eq!(hits[0].note, None);
+    assert!(hits.len() > 1 && hits[1..].iter().all(|t| t.note.as_deref().is_some_and(|n| n.starts_with("Found in CPS's description"))));
+    let labels: Vec<&str> =
+        hits[1..].iter().flat_map(|t| &t.sections).flat_map(|s| &s.groups).flat_map(|g| &g.settings).map(|s| s.label.as_str()).collect();
+    assert!(labels.contains(&"Send Talker Alias"), "{labels:?}");
     assert!(search(&ws, "no such setting anywhere").is_empty());
 }

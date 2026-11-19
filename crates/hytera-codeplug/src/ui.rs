@@ -151,6 +151,11 @@ impl UiTree {
         Some(crate::options::Options::default_path(version)?.with_file_name("ui.json"))
     }
 
+    /// Every layout field id that appears on some CPS screen of this tree.
+    pub fn param_ids(&self) -> std::collections::HashSet<u32> {
+        self.pages().into_iter().flat_map(|(_, p)| &p.groups).flat_map(|g| g.params.iter().copied()).collect()
+    }
+
     /// Every (category path, page) pair, depth first, in CPS's order.
     pub fn pages(&self) -> Vec<(Vec<&str>, &Page)> {
         fn walk<'a>(c: &'a Category, path: &mut Vec<&'a str>, out: &mut Vec<(Vec<&'a str>, &'a Page)>) {

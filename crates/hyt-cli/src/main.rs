@@ -103,6 +103,12 @@ enum Command {
         #[arg(long, env = "HYT_OPTIONS")]
         options: Option<PathBuf>,
     },
+    /// Hytera licences: check a licence package (.zip) offline like CPS's Authorization does, or
+    /// show which licences a radio has installed. Never sends a licence to the radio.
+    Licence {
+        #[command(subcommand)]
+        action: LicenceAction,
+    },
     /// Tables as spreadsheets (CSV): every field of every record with CPS's labels and units.
     Csv {
         #[command(subcommand)]
@@ -228,6 +234,146 @@ fn csv_command(action: CsvAction) -> Result<()> {
                 report.errors.len()
             );
         }
+    }
+    Ok(())
+}
+
+#[derive(Subcommand)]
+enum LicenceAction {
+    /// Check a licence package from Hytera (.zip with readme .xml, .md5 and .fcr) the way CPS's
+    /// Authorization button does: files, checksums, serial number and CPS V1.5.24's model rules.
+    /// Offline; nothing is sent to the radio.
+    Check {
+        /// The licence package (.zip).
+        package: PathBuf,
+        /// A folder read from the radio the licence is for (`hyt read`): checks its serial
+        /// number and model like CPS.
+        #[arg(long)]
+        radio: Option<PathBuf>,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the licences a radio reports (identify item 0x0200) and the licence flags in its
+    /// settings, from a saved read or (with --port) by identifying the radio (no programming mode).
+    Status {
+        /// A folder saved by `hyt read`.
+        #[arg(required_unless_present_any = ["port", "replay"])]
+        folder: Option<PathBuf>,
+        /// Identify the radio on this serial port instead.
+        #[arg(short, long, conflicts_with = "folder")]
+        port: Option<String>,
+        /// Replay a recorded CPS session instead.
+        #[arg(long, conflicts_with_all = ["folder", "port"])]
+        replay: Option<PathBuf>,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
+    },
+}
+
+fn print_installed(l: &hyt_core::licence::InstalledLicences) {
+    use hyt_core::licence::licence_name;
+    if l.unrecognised {
+        println!("Installed licences (item 0x0200): answer not understood, raw {}", l.raw_hex);
+    } else if l.codes.is_empty() {
+        println!("Installed licences (item 0x0200): none (all zero)");
+    } else {
+        println!("Installed licences (item 0x0200):");
+        for c in &l.codes {
+            println!("  {c} {}", licence_name(c).unwrap_or("(unknown code)"));
+        }
+    }
+}
+
+fn licence_command(action: LicenceAction) -> Result<()> {
+    use hyt_core::licence::{Level, RadioFacts, check_package_file, installed_from_manifest, installed_licences};
+    match action {
+        LicenceAction::Check { package, radio, json } => {
+            let facts = match &radio {
+                Some(dir) => Some(RadioFacts::from_manifest(&load_read(dir)?.manifest)?),
+                None => None,
+            };
+            let report = check_package_file(&package, facts.as_ref())?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                return Ok(());
+            }
+            println!("Licence package {}", package.display());
+            for e in &report.entries {
+                println!("  {:<40} {:>8} bytes", e.name, e.size);
+            }
+            for p in &report.packages {
+                println!("Package for serial {:?}: file {:?}", p.objdevice, p.file);
+                for f in &p.features {
+                    println!(
+                        "  {} {:<22} value {:?} -> {}",
+                        f.code,
+                        f.name.unwrap_or("(unknown code)"),
+                        f.value,
+                        if f.licensed { "licensed" } else { "not licensed" }
+                    );
+                }
+            }
+            println!("Checks (CPS's order):");
+            for c in &report.checks {
+                let tag = match c.level {
+                    Level::Ok => "ok     ",
+                    Level::Note => "note   ",
+                    Level::Refused => "REFUSED",
+                };
+                println!("  {tag} {}", c.text);
+            }
+            match &report.radio {
+                None => println!("Result: give --radio <read folder> to check against the radio."),
+                Some(r) if report.accepted() => println!(
+                    "Result: CPS V1.5.24 would send this licence to {} {} (the radio then checks it itself).",
+                    r.model_name, r.serial
+                ),
+                Some(r) => println!("Result: CPS V1.5.24 would refuse this package for {} {}.", r.model_name, r.serial),
+            }
+        }
+        LicenceAction::Status { folder, port, replay, rcdb } => match folder {
+            Some(dir) => {
+                let saved = load_read(&dir)?;
+                match installed_from_manifest(&saved.manifest) {
+                    Some(l) => print_installed(&l),
+                    None => println!("Installed licences: item 0x0200 not in this read's manifest"),
+                }
+                let layout = load_layout(&saved, &rcdb_root(rcdb))?;
+                let decoded = decode_read(&saved, &layout)?;
+                for (file, block, what) in [(18u16, 902u16, "Comm_Basic 902 (used by CPS)"), (253, 920, "Comm_RadioInfo 920")] {
+                    let Some(rec) = decoded
+                        .iter()
+                        .find(|f| f.id == file)
+                        .and_then(|f| f.blocks.iter().find(|b| b.id == block))
+                        .and_then(|b| b.records.first())
+                        .and_then(|r| r.fields.as_ref())
+                    else {
+                        continue;
+                    };
+                    let flags: Vec<String> = hyt_core::licence::LICENCE_CODES
+                        .iter()
+                        .filter_map(|(_, name)| rec.0.get(*name).map(|v| format!("{name}={v}")))
+                        .collect();
+                    println!("Licence flags in {what}: {}", flags.join(", "));
+                }
+            }
+            None => {
+                let (transport, _) = Source { port, replay }.open()?;
+                let mut session = Session::new(transport);
+                let info = session.identify().context("identifying the radio")?;
+                println!(
+                    "{} serial {}",
+                    info.model_name().unwrap_or_default(),
+                    info.serial_number().unwrap_or_default()
+                );
+                match info.items.get(&hyt_core::licence::LICENCE_INFO_ITEM) {
+                    Some(i) if i.status == 0 => print_installed(&installed_licences(&i.value)),
+                    Some(i) => println!("Installed licences: item 0x0200 not supported (status {})", i.status),
+                    None => println!("Installed licences: item 0x0200 not answered"),
+                }
+            }
+        },
     }
     Ok(())
 }
@@ -400,7 +546,7 @@ fn rcdb_command(action: RcdbAction) -> Result<()> {
             // Exported catalogues: <from>/<version>/{options,ui,models}.json (a copied hyt/rcdb folder).
             for entry in std::fs::read_dir(&from).with_context(|| format!("reading {}", from.display()))?.flatten() {
                 let dir = entry.path();
-                for f in ["options.json", "ui.json", "models.json"] {
+                for f in ["options.json", "ui.json", "models.json", "visibility.json", "links.json"] {
                     if dir.join(f).is_file() && dir != data.join(entry.file_name()) {
                         std::fs::create_dir_all(data.join(entry.file_name()))?;
                         std::fs::copy(dir.join(f), data.join(entry.file_name()).join(f))?;
@@ -477,6 +623,23 @@ fn main() -> Result<()> {
                 println!("Profile: {}", profile_for(&info).display_name);
                 for e in info_entries(&info) {
                     let value = match (e.status, e.text) {
+                        (0, _) if e.item == format!("0x{:04X}", hyt_core::licence::LICENCE_INFO_ITEM) => {
+                            let l = info
+                                .items
+                                .get(&hyt_core::licence::LICENCE_INFO_ITEM)
+                                .map(|i| hyt_core::licence::installed_licences(&i.value));
+                            match l {
+                                Some(l) if l.unrecognised => format!("hex {}", l.raw_hex),
+                                Some(l) if l.codes.is_empty() => "none".to_string(),
+                                Some(l) => l
+                                    .codes
+                                    .iter()
+                                    .map(|c| hyt_core::licence::licence_name(c).unwrap_or(c).to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                                None => String::new(),
+                            }
+                        }
                         (0, Some(t)) => t,
                         (0, None) => format!("hex {}", e.hex),
                         (s, _) => format!("(not supported, status {s})"),
@@ -579,6 +742,7 @@ fn main() -> Result<()> {
         Command::Rcdb { action } => rcdb_command(action)?,
         Command::Tpl { action } => tpl_command(action)?,
         Command::Csv { action } => csv_command(action)?,
+        Command::Licence { action } => licence_command(action)?,
         Command::Write { port, from, backup, rcdb, allow_unverified } => {
             write_command(&port, &from, &backup, &rcdb_root(rcdb), allow_unverified)?;
         }

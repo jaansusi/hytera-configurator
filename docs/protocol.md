@@ -85,6 +85,17 @@ Strings in this layer are **UTF-16BE**. (Strings inside the radio's files are UT
 | Open file for writing | `01F0` / `000B` | `u16 fileId, u32 fileSize, u16 chunkSize` (`0x0400`) | `u16 status` |
 | Write chunk | `41F8` / `0005` | `u16 chunkIndex` (1-based), `bytes[≤chunkSize]` | `u32 chunkIndex` |
 | Leave programming session | `01F0` / `0001` | `u8 mode, 00` (`00 00` read, `01 00` write) | `u16 status` |
+| Request random value | `E100` / `0001` | ? | reply `E100/0002`, *inferred* 10 bytes |
+| Check random value | `E100` / `0003` | ? | reply `E100/0004` |
+| Write secure file head | `E100` / `0009` | *inferred* `u16 region, u32 size, u16 MTU` (CPS: 512, n, 1400) | reply `E100/000A` |
+| Write secure file pack | `E100` / `000B` | *inferred* chunk index + up to 1400 bytes | reply `E100/000C` |
+
+The `E100` commands are *observed* only as names and numbers in `G2CPS.Protocol.dll`
+(`CpsCommandOpcode`/`CpsCommandReplyOpcode`, 32-bit = opcode << 16 | sub; their replies use sub + 1, not bit
+`0x1000`); never seen on the wire. CPS uses them to install a licence (`WriteLicenseFile`, see
+[research-cps-visibility.md](research-cps-visibility.md#where-the-licence-comes-from-licence-install)). The same
+enum confirms every opcode above (e.g. `EnterCpsMode` = `0x01F00000`, `ReadRcdbFilePack` = `0x41F80008`) and names
+`0x01F0/0002` SendCPSPassword, `0x01F0/0004` GetRadioCpsInfo and `0x0003/001B` GetRadioID.
 
 Example (open `Comm_Basic`, file 18, then read it):
 
@@ -102,18 +113,27 @@ way to decode recordings.
 
 ### Info items read by CPS (from this radio)
 
-| Item | Value | Probable meaning |
-|---|---|---|
-| 0 | `55P10B00-1L0BAPU1U1…-00040000` | model code / feature string |
-| 1 | `V1.5.36.001` | firmware version |
-| 2 | `V1.5.24.000` | RCDB (file layout) version → selects `RcdbJsons\*.txt` |
-| 3 | `V1.6.03.001` | other component version |
-| 6 | `V1.0.03.024.AP.BP.U1` | hardware / board version |
-| 10 | `0010412200000006` | radio ID / band info (unconfirmed) |
-| 11 | `R23N141382` | serial number |
-| 17 | `BP515 U1` | model name |
-| 0xFFF0 | `DMR` | product type |
-| 0xFFF6 | `2024-07-10` | last programming date (CPS writes today's date into `Comm_Basic` on every write) |
+CPS's names are *observed* in `G2CPS.Protocol.dll`, enum `G2CPS.Protocol.AppProtocol.BaseInforItem` (2026-11-19).
+
+| Item | CPS name | Value | Meaning |
+|---|---|---|---|
+| 0 | ModelNumber | `55P10B00-1L0BAPU1U1…-00040000` | model number (hardware options; decoded by `XML Model Number Rule.xml`) |
+| 1 | FirmareVersion | `V1.5.36.001` | firmware version |
+| 2 | RcdbVersion | `V1.5.24.000` | RCDB (file layout) version → selects `RcdbJsons\*.txt` |
+| 3 | BootVersion | `V1.6.03.001` | bootloader (L3 on CPS's Radio Information page) |
+| 6 | TuningDataVersion | `V1.0.03.024.AP.BP.U1` | tuning data version |
+| 7, 8, 9 | FixedStringVersion, FontVersion, ImageVersion | status 1 | not supported on the BP515 |
+| 10 | TEIorESN | `0010412200000006` | TEI / ESN |
+| 11 | SN | `R23N141382` | serial number |
+| 17 | ModelName | `BP515 U1` | model name |
+| 0x0045 | BluetoothVersion | `V1.6.02.001` | (as named by CPS; same text as item 0x65) |
+| 0x0065 | L2BootVersion | `V1.6.02.001` | bootloader L2 |
+| 0x0071 | …FixedString_LANG_NUM | `FF FF` (binary) | number of fixed-string languages |
+| 0x0100 | AnimationVersion | `V1.0.05.000` | on/off animation (CPS shows N/A on models without a screen) |
+| **0x0200** | **LicenseFeature** | 64 bytes `00` | **licences installed in the radio**: all zero on this BP515 = none. *Inferred* format: `;`-separated licence codes (CPS splits `LicenseFeature` on `;` and matches codes 1500–1509, see [research-cps-visibility.md](research-cps-visibility.md#where-the-licence-comes-from-licence-install)) |
+| 0xFFF0 | BoardType | `DMR` | product type |
+| 0xFFF4 | VoiceVersion | `V1.00.05.000` | voice broadcast version |
+| 0xFFF6 | RCDBBuildTime | `2024-07-10` | RCDB build date (earlier guess "last programming date" was wrong; that date is in `Comm_Basic`) |
 
 ## 4. Full read sequence used by CPS
 

@@ -9,8 +9,9 @@ use serde_json::{Map, Value};
 
 use crate::ReadManifest;
 
-/// Field names whose values are never shown (the radio's programming passwords).
-const SECRET_FIELDS: &[&str] = &["Write Password", "Read Possword", "Read Password"];
+/// Field names whose values are never shown: the radio's programming passwords and the encryption
+/// keys of the key list (`QEU_C_E2EEKEYLIST` 242, `Key Value`).
+const SECRET_FIELDS: &[&str] = &["Write Password", "Read Possword", "Read Password", "Key Value"];
 
 /// Whether field `key` holds a programming password, which is never shown or edited.
 pub fn is_secret(key: &str) -> bool {

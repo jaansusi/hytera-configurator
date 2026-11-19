@@ -20,6 +20,9 @@
         <hr>
         <button role="menuitem" id="mi-tpl-export" title="Save the configuration as shown (including unsaved changes) as a template file CPS can open">Export CPS template…</button>
         <button role="menuitem" id="mi-tpl-import" title="Turn a CPS template into a new folder for this radio and open it">Import CPS template…</button>
+        <hr>
+        <button role="menuitemcheckbox" id="mi-show-licence" aria-checked="false" title="Show (read-only) the settings of features this radio is not licensed for, which CPS hides">Show fields that need a licence</button>
+        <button role="menuitemcheckbox" id="mi-show-internal" aria-checked="false" title="Show (read-only) the settings Hytera hides even in CPS: internal ones and ones on no CPS screen">Show internal fields</button>
       </div>
     </div>
     <span class="sep"></span>
@@ -34,6 +37,7 @@
     <aside id="detail"></aside>
   </main>
   <footer id="status"></footer>
+  <div id="help-pop" class="help-pop" role="tooltip" hidden></div>
 
   <dialog id="dlg-read">
     <form method="dialog">

@@ -286,6 +286,28 @@ pub fn move_zone_member(state: State<'_, AppState>, zone: usize, member: usize, 
     })
 }
 
+/// The quick setup questions for the open radio (see `hyt_core::quick`).
+#[tauri::command]
+pub fn get_quick_setup(state: State<'_, AppState>) -> CmdResult<Vec<hyt_core::quick::Question>> {
+    state.with_ws(|ws| Ok(hyt_core::quick::questions(ws)))
+}
+
+#[derive(Serialize)]
+pub struct QuickSetupResult {
+    overview: Overview,
+    outcome: hyt_core::quick::Outcome,
+}
+
+/// Apply quick setup answers as pending edits (all or nothing), or with `dry_run` only list what
+/// they would change.
+#[tauri::command]
+pub fn apply_quick_setup(state: State<'_, AppState>, replies: Vec<hyt_core::quick::Reply>, dry_run: bool) -> CmdResult<QuickSetupResult> {
+    state.with_ws(|ws| {
+        let outcome = hyt_core::quick::apply(ws, &replies, dry_run)?;
+        Ok(QuickSetupResult { overview: overview(ws), outcome })
+    })
+}
+
 #[tauri::command]
 pub fn get_changes(state: State<'_, AppState>) -> CmdResult<Vec<ChangeView>> {
     state.with_ws(|ws| Ok(tables::change_list(ws)))

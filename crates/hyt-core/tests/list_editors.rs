@@ -114,12 +114,14 @@ fn list_values_are_edited_through_the_validated_path() {
 
     ws.set_value(&field(&scan, 0, "Scan List Alias"), "Scan Home").unwrap();
     ws.set_value(&field(&scan, 0, "Hang Time"), "4").unwrap();
-    ws.set_value(&field(&roam, 0, "Roam List Alias"), "Roam Home").unwrap();
+    // Roam lists need the Roam licence, which this radio does not have (CPS hides them).
+    let err = ws.set_value(&field(&roam, 0, "Roam List Alias"), "Roam Home").unwrap_err();
+    assert!(format!("{err:#}").contains("Needs the Roam licence"), "{err:#}");
     ws.set_value(&field(&rx, 0, "Rx Group List Alias"), "Group RX").unwrap();
 
     // The new values are in the files to save/write, and only in those files.
     let changed: Vec<u16> = ws.files().iter().filter(|(id, b)| original.get(id) != Some(b)).map(|(id, _)| *id).collect();
-    assert_eq!(changed, [39, 81, 85]);
+    assert_eq!(changed, [81, 85]);
     let scan = table(&ws, "list:QEU_C_ScanConfig").unwrap();
     assert_eq!(texts(&scan, "Scan List Alias"), ["Scan Home"]);
     assert_eq!(texts(&scan, "Hang Time"), ["4"]);
@@ -130,7 +132,6 @@ fn list_values_are_edited_through_the_validated_path() {
         changes.iter().map(|c| (c.place.as_str(), c.setting.as_str(), c.old.as_str(), c.new.as_str())).collect();
     assert!(places.contains(&("Scan list 1 \"Scan Home\"", "Scan List Alias", "Scan List 1", "Scan Home")), "{places:?}");
     assert!(places.contains(&("Scan list 1 \"Scan Home\"", "Hang Time", "3 s", "4 s")), "{places:?}");
-    assert!(places.contains(&("Roam list 1 \"Roam Home\"", "Roam List Alias", "Roam List 1", "Roam Home")), "{places:?}");
     assert!(places.contains(&("RX group list 1 \"Group RX\"", "Rx Group List Alias", "Rx Group List 1", "Group RX")), "{places:?}");
     assert!(changes.iter().all(|c| c.field.is_some()), "every list value change can be reverted");
 

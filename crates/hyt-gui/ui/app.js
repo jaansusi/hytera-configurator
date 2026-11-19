@@ -20,6 +20,10 @@ const state = {
   settingsTopic: null, // selected topic id
   settingsQuery: '',   // search text
   settingsData: [],    // topics shown (one, or search results)
+  helpOpen: new Set(), // fields whose help text is expanded (file:block:key)
+  showLicence: false,  // show (read-only) fields of features the radio is not licensed for
+  showInternal: false, // show (read-only) fields Hytera hides even in CPS
+  quick: null,     // quick setup: questions, answers and the step shown (null until opened)
   busy: false,     // a radio operation is running
 };
 
@@ -85,6 +89,131 @@ async function confirmDiscard() {
     { ok: 'Discard', danger: true });
 }
 
+// ---------- help texts (CPS's own, shown on request) ----------
+
+/** CPS's description, choices and notes for a field. */
+function helpContent(help) {
+  return h('div', { class: 'help-text' },
+    help.text ? h('p', {}, help.text) : null,
+    help.options ? h('div', {}, h('strong', {}, 'Choices'), h('p', {}, help.options)) : null,
+    help.notes ? h('div', {}, h('strong', {}, 'Note'), h('p', {}, help.notes)) : null,
+    h('p', { class: 'help-source' }, 'Description from Hytera CPS'));
+}
+
+const helpKey = (field, column) => (field ? `${field.file}:${field.block}:${field.key}` : `column:${column.key}`);
+
+/**
+ * Append `label`, `value` and (when the field has help) a collapsed help box to a `.fields` grid,
+ * with a "?" button in the label that shows or hides it. Open boxes stay open across re-renders.
+ */
+function appendField(grid, label, value, help, key) {
+  if (!help) {
+    grid.append(label, value);
+    return;
+  }
+  const box = helpContent(help);
+  box.classList.add('inline');
+  box.hidden = !state.helpOpen.has(key);
+  const button = h('button', {
+    type: 'button',
+    class: `help-btn${box.hidden ? '' : ' open'}`,
+    title: 'What is this? (description from CPS)',
+    'aria-expanded': String(!box.hidden),
+    onclick: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      box.hidden = !box.hidden;
+      if (box.hidden) state.helpOpen.delete(key); else state.helpOpen.add(key);
+      button.classList.toggle('open', !box.hidden);
+      button.setAttribute('aria-expanded', String(!box.hidden));
+    },
+  }, '?');
+  label.append(button);
+  grid.append(label, value, box);
+}
+
+/** A field label: the name (shortened with … when long) and room for a help button. */
+function fieldLabel(text, { disabled = false, title = null } = {}) {
+  return h('span', { class: `label${disabled ? ' disabled' : ''}`, title }, h('span', { class: 'label-text' }, text));
+}
+
+// ---------- fields CPS hides (licence-limited or internal), shown on request ----------
+
+const HIDDEN_PREFS = { licence: 'hyt.showLicence', internal: 'hyt.showInternal' };
+
+function loadHiddenPrefs() {
+  try {
+    state.showLicence = localStorage.getItem(HIDDEN_PREFS.licence) === '1';
+    state.showInternal = localStorage.getItem(HIDDEN_PREFS.internal) === '1';
+  } catch { /* storage unavailable: keep the defaults */ }
+}
+
+function setHiddenPref(kind, on) {
+  if (kind === 'licence') state.showLicence = on; else state.showInternal = on;
+  try { localStorage.setItem(HIDDEN_PREFS[kind], on ? '1' : '0'); } catch { /* not remembered */ }
+  syncHiddenMenu();
+  // Leave a list that is now hidden as a whole.
+  if (kind === 'licence' && !on && state.overview?.lists?.some((l) => l.id === state.view && l.hidden)) {
+    state.view = 'digital';
+    state.selected = null;
+    refresh();
+    return;
+  }
+  render();
+}
+
+function syncHiddenMenu() {
+  for (const [id, on] of [['mi-show-licence', state.showLicence], ['mi-show-internal', state.showInternal]]) {
+    const item = $(id);
+    item.setAttribute('aria-checked', String(on));
+    item.classList.toggle('checked', on);
+  }
+}
+
+/** Whether a field with this column is shown under the current switches. */
+function fieldShown(column) {
+  const hidden = column?.hidden;
+  if (!hidden) return true;
+  return hidden.kind === 'licence' ? state.showLicence : state.showInternal;
+}
+
+/** A tag after the label of a field CPS hides, with the reason as tooltip. */
+function hiddenTag(column) {
+  const why = column?.hidden;
+  if (!why) return null;
+  return why.kind === 'licence'
+    ? h('span', { class: 'tag licence', title: why.reason }, 'licence')
+    : h('span', { class: 'tag internal', title: why.reason }, 'internal');
+}
+
+/** "12 fields hidden like CPS: 8 need a licence · 4 internal", with links that show them. */
+function hiddenNote(columns) {
+  const count = (kind) => columns.filter((c) => c?.hidden?.kind === kind).length;
+  const licence = count('licence');
+  const internal = count('internal');
+  if (!licence && !internal) return null;
+  const link = (kind, n, label, on) => n ? h('button', { class: 'link', onclick: () => setHiddenPref(kind, !on) },
+    on ? `hide the ${label}` : `show ${n} ${n === 1 ? label.replace(/s$/, '') : label}`) : null;
+  const parts = [link('licence', licence, 'fields that need a licence', state.showLicence), link('internal', internal, 'internal fields', state.showInternal)].filter(Boolean);
+  return h('p', { class: 'note hidden-note' },
+    `${plural(licence + internal, 'field')} hidden like CPS does: `, ...parts.flatMap((p, i) => (i ? [' · ', p] : [p])));
+}
+
+/** Show `help` in a small popover under `anchor` (table column headers). */
+function showHelpPopover(anchor, title, help) {
+  const pop = $('help-pop');
+  pop.replaceChildren(h('div', { class: 'help-pop-title' }, title), helpContent(help));
+  pop.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  const width = pop.offsetWidth;
+  pop.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - width - 8))}px`;
+  pop.style.top = `${r.bottom + 6}px`;
+}
+
+function hideHelpPopover() {
+  $('help-pop').hidden = true;
+}
+
 /** Folder picker: chooses the parent folder and keeps the suggested folder name. */
 async function browseNewFolder(input) {
   const current = input.value.trim();
@@ -102,6 +231,14 @@ async function loadView() {
     state.table = null;
     state.changes = await invoke('get_changes');
     state.detail = null;
+  } else if (state.view === 'quick') {
+    state.table = null;
+    state.detail = null;
+    // Questions are rebuilt each time (what the radio has now may have changed); answers stay.
+    const questions = await invoke('get_quick_setup');
+    state.quick = state.quick
+      ? { ...state.quick, questions }
+      : { questions, step: 0, mode: null, answers: {}, values: {}, channel: null, replace: false, review: null, error: null, openDetails: new Set() };
   } else if (state.view === 'settings') {
     state.table = null;
     state.detail = null;
@@ -133,6 +270,7 @@ async function opened(overview, message) {
   state.overview = overview;
   state.view = 'digital';
   state.selected = null;
+  state.quick = null;
   await refresh();
   setStatus(message, 'ok');
 }
@@ -236,12 +374,17 @@ function renderNav() {
       await refresh();
     },
   }, h('span', {}, title), extra);
-  const lists = o.lists || [];
+  // Lists CPS hides as a whole (a licence the radio does not have) only with the licence switch on.
+  const lists = (o.lists || []).filter((t) => !t.hidden || state.showLicence);
   nav.replaceChildren(
+    item('quick', 'Quick setup', null),
+    h('hr'),
     ...o.tables.map((t) => item(t.id, t.title, h('span', { class: 'count' }, `${t.rows}/${t.capacity}`))),
     ...(o.has_settings ? [item('settings', 'Settings', null)] : []),
     ...(lists.length ? [h('div', { class: 'nav-heading' }, 'Lists')] : []),
-    ...lists.map((t) => item(t.id, t.title, h('span', { class: 'count' }, `${t.rows}/${t.capacity}`))),
+    ...lists.map((t) => item(t.id, t.title, t.hidden
+      ? h('span', { class: 'tag licence', title: t.hidden.reason }, 'licence')
+      : h('span', { class: 'count' }, `${t.rows}/${t.capacity}`))),
     h('hr'),
     item('changes', 'Changes', o.changes ? h('span', { class: 'badge' }, o.changes) : h('span', { class: 'count' }, '0')),
   );
@@ -267,6 +410,10 @@ function renderContent() {
     renderSettings(c);
     return;
   }
+  if (state.view === 'quick') {
+    c.replaceChildren(renderQuick());
+    return;
+  }
   const t = state.table;
   if (!t) {
     c.replaceChildren();
@@ -288,7 +435,15 @@ function renderContent() {
   const table = h('table', { class: 'grid' },
     h('thead', {}, h('tr', {},
       h('th', {}, 'No.'),
-      t.columns.map((col) => h('th', { title: col.key }, col.title, col.unit ? h('small', {}, col.unit) : null)))),
+      t.columns.filter(fieldShown).map((col) => h('th', { title: col.hidden?.reason || col.key },
+        h('span', { class: 'th-title' }, col.title, hiddenTag(col),
+          col.help ? h('button', {
+            type: 'button',
+            class: 'help-btn',
+            title: 'What is this? (description from CPS)',
+            onclick: (e) => { e.stopPropagation(); showHelpPopover(e.currentTarget, col.title, col.help); },
+          }, '?') : null),
+        col.unit ? h('small', {}, col.unit) : null)))),
     h('tbody', {}, t.rows.map((row, i) => renderRow(t, row, i))));
   c.replaceChildren(...[head, note, table].filter(Boolean));
 }
@@ -304,6 +459,7 @@ function renderRow(t, row, i) {
     },
   }, h('td', { class: 'no' }, row.no));
   row.cells.forEach((cell, j) => {
+    if (!fieldShown(t.columns[j])) return;
     const col = cell.editor ? { ...t.columns[j], editor: cell.editor } : t.columns[j];
     const classes = [cell.changed ? 'changed' : '', cell.editable ? 'editable' : '', cell.disabled ? 'disabled' : '',
       col.key === 'members' ? 'members' : ''];
@@ -421,10 +577,13 @@ function renderDetail() {
   }
 
   parts.push(h('h3', {}, 'All settings'));
+  parts.push(hiddenNote(state.detail.map((f) => f.column)));
   const grid = h('div', { class: 'fields' });
   for (const field of state.detail) {
+    if (!fieldShown(field.column)) continue;
     const f = field.cell.editor ? { ...field, column: { ...field.column, editor: field.cell.editor } } : field;
-    const label = h('span', { class: `label${f.cell.disabled ? ' disabled' : ''}`, title: f.cell.disabled || f.column.key }, f.column.title);
+    const label = fieldLabel(f.column.title, { disabled: !!f.cell.disabled || !!f.column.hidden, title: f.column.hidden?.reason || f.cell.disabled || f.column.key });
+    if (f.column.hidden) label.append(hiddenTag(f.column));
     const value = h('span', { class: `value${f.cell.changed ? ' changed' : ''}${f.cell.disabled ? ' disabled' : ''}` });
     if (f.cell.editable && f.column.editor.kind !== 'read_only') {
       let sending = false;
@@ -446,7 +605,7 @@ function renderDetail() {
       value.append(h('span', { class: 'ro', title: f.cell.disabled || f.cell.text }, f.cell.text));
       if (f.column.unit) value.append(h('span', { class: 'unit' }, f.column.unit));
     }
-    grid.append(label, value);
+    appendField(grid, label, value, f.column.help, helpKey(f.cell.field, f.column));
   }
   parts.push(grid);
   d.replaceChildren(...parts);
@@ -482,11 +641,23 @@ function renderSettings(c) {
     },
   }, h('span', {}, t.title), t.changed ? h('span', { class: 'badge' }, t.changed) : (t.read_only ? h('span', { class: 'count', title: 'Read-only' }, '🔒') : null))));
   const body = document.getElementById('settings-body');
-  if (searching && !state.settingsData.length) {
-    body.replaceChildren(h('p', { class: 'note' }, `No setting matches "${state.settingsQuery}".`));
+  // Drop the fields CPS hides (unless switched on), then groups, sections and topics left empty.
+  const all = state.settingsData.flatMap((t) => t.sections.flatMap((s) => s.groups.flatMap((g) => g.settings.map((x) => x.column))));
+  const topics = state.settingsData.map((t) => ({
+    ...t,
+    sections: t.sections.map((s) => ({
+      ...s,
+      groups: s.groups.map((g) => ({ ...g, settings: g.settings.filter((x) => fieldShown(x.column)) })).filter((g) => g.settings.length),
+    })).filter((s) => s.groups.length),
+  })).filter((t) => t.sections.length);
+  const note = hiddenNote(all);
+  if (!topics.length) {
+    body.replaceChildren(
+      h('p', { class: 'note' }, searching ? `No setting matches "${state.settingsQuery}".` : 'Nothing to show on this page.'),
+      note);
     return;
   }
-  body.replaceChildren(...state.settingsData.map((t) => h('div', { class: 'settings-topic' },
+  body.replaceChildren(note || '', ...topics.map((t) => h('div', { class: 'settings-topic' },
     h('h2', {}, t.title),
     t.note ? h('p', { class: 'note' }, t.note) : null,
     ...t.sections.map((s) => h('section', { class: 'settings-section' },
@@ -499,7 +670,8 @@ function renderSettings(c) {
 function renderSettingRows(settings) {
   const grid = h('div', { class: 'fields' });
   for (const s of settings) {
-    const label = h('span', { class: `label${s.cell.disabled ? ' disabled' : ''}`, title: s.cell.disabled || s.column.key }, s.label);
+    const label = fieldLabel(s.label, { disabled: !!s.cell.disabled || !!s.column.hidden, title: s.column.hidden?.reason || s.cell.disabled || s.column.key });
+    if (s.column.hidden) label.append(hiddenTag(s.column));
     const value = h('span', { class: `value${s.cell.changed ? ' changed' : ''}${s.cell.disabled ? ' disabled' : ''}` });
     if (s.cell.editable && s.column.editor.kind !== 'read_only') {
       let sending = false;
@@ -521,7 +693,7 @@ function renderSettingRows(settings) {
       value.append(h('span', { class: 'ro', title: s.read_only || s.cell.disabled || s.cell.text }, s.cell.text));
       if (s.column.unit) value.append(h('span', { class: 'unit' }, s.column.unit));
     }
-    grid.append(label, value);
+    appendField(grid, label, value, s.column.help, helpKey(s.cell.field, s.column));
   }
   return grid;
 }
@@ -544,6 +716,363 @@ function renderChanges() {
       h('td', { class: 'changed' }, c.new),
       h('td', {}, c.field ? h('button', { class: 'link', onclick: () => onRevert(c.field) }, 'Revert') : null)))));
   return h('div', {}, head, table);
+}
+
+// ---------- quick setup ----------
+//
+// Step 0 asks how to start (adjust what the radio has, or start fresh with recommended answers and
+// the starter channels), then one question per step, then a review that lists exactly what would
+// change (a dry run in Rust). Applying turns the answers into ordinary pending changes; nothing is
+// written to the radio here.
+
+const KIND_LABEL = { digital: 'Digital', analog: 'Analog' };
+
+/** Step numbers: 0 is the start, questions are 1…n, the review is n + 1. */
+const reviewStep = (q) => q.questions.length + 1;
+const questionAt = (q, step) => (step >= 1 && step <= q.questions.length ? q.questions[step - 1] : null);
+
+/** The question has an answer that changes something (or would). */
+function quickAnswered(q, question) {
+  if (question.kind === 'choice') return q.answers[question.id] != null;
+  if (question.kind === 'values') return Object.keys(q.values[question.id] || {}).length > 0;
+  return q.channel != null || q.replace;
+}
+
+/** Choose how to start: preselect the recommended answers and the starter channels, or nothing. */
+function quickStart(mode) {
+  const q = state.quick;
+  q.mode = mode;
+  q.answers = {};
+  q.channel = null;
+  q.replace = false;
+  if (mode === 'fresh') {
+    for (const question of q.questions) {
+      if (question.kind === 'choice' && question.recommended) q.answers[question.id] = question.recommended;
+      if (question.kind === 'channel' && question.starter.length) q.replace = true;
+    }
+  }
+  renderContent();
+}
+
+/** The answers in `apply_quick_setup`'s form. */
+function quickReplies() {
+  const q = state.quick;
+  const replies = [];
+  for (const question of q.questions) {
+    if (question.kind === 'choice' && q.answers[question.id] != null) {
+      replies.push({ question: question.id, answer: q.answers[question.id] });
+    } else if (question.kind === 'values' && Object.keys(q.values[question.id] || {}).length) {
+      replies.push({ question: question.id, values: q.values[question.id] });
+    } else if (question.kind === 'channel' && q.replace) {
+      replies.push({ question: question.id, replace_channels: true });
+    } else if (question.kind === 'channel' && q.channel) {
+      const c = q.channel;
+      replies.push({ question: question.id, channel: {
+        kind: c.kind, name: c.name, rx: c.rx, tx: c.repeater ? c.tx : '',
+        color_code: c.kind === 'digital' ? c.color_code : null,
+        slot: c.kind === 'digital' ? c.slot : null,
+        spacing: c.kind === 'analog' ? c.spacing : null,
+        tone: c.kind === 'analog' ? c.tone : null,
+        tone_rx: c.kind === 'analog' && !!c.tone && c.tone_rx,
+        add_to_zone: c.add_to_zone,
+      } });
+    }
+  }
+  return replies;
+}
+
+/** Show step `i` (the review comes after the last question and previews the result). */
+async function quickGo(i) {
+  const q = state.quick;
+  if (questionAt(q, q.step)?.kind === 'channel' && q.channel && i > q.step) {
+    const missing = !q.channel.name.trim() ? 'Give the channel a name.' : (!q.channel.rx.trim() ? "Give the channel's frequency." : null);
+    if (missing) {
+      q.error = missing;
+      renderContent();
+      return;
+    }
+  }
+  q.step = i;
+  q.review = null;
+  q.error = null;
+  if (i === reviewStep(q)) {
+    try {
+      const r = await invoke('apply_quick_setup', { replies: quickReplies(), dryRun: true });
+      q.review = r.outcome;
+    } catch (e) {
+      q.error = errorText(e);
+    }
+  }
+  renderContent();
+  $('content').scrollTop = 0;
+}
+
+async function quickApply() {
+  const q = state.quick;
+  try {
+    const r = await invoke('apply_quick_setup', { replies: quickReplies(), dryRun: false });
+    const n = r.outcome.changes.length;
+    state.overview = r.overview;
+    state.quick = null;
+    state.view = 'changes';
+    await refresh();
+    setStatus(`Quick setup: ${plural(n, 'change')} added to the pending changes. Check them here, then use Save as… or Write to radio….`, 'ok');
+  } catch (e) {
+    q.error = errorText(e);
+    renderContent();
+  }
+}
+
+function renderQuick() {
+  const q = state.quick;
+  if (!q) return h('div');
+  if (!q.questions.length) {
+    return h('div', { class: 'empty' }, h('h1', {}, 'Quick setup'),
+      h('p', {}, "None of the quick setup questions apply to this radio, or CPS's screen data is missing (run tools/export-rcdb-options.ps1)."));
+  }
+  const last = reviewStep(q);
+  const steps = h('ol', { class: 'quick-steps' },
+    h('li', { class: [q.step === 0 ? 'active' : '', q.mode ? 'done' : ''].join(' ').trim() },
+      h('button', { onclick: () => quickGo(0) }, 'Start')),
+    ...q.questions.map((question, i) => h('li', {
+      class: [i + 1 === q.step ? 'active' : '', quickAnswered(q, question) ? 'done' : ''].join(' ').trim(),
+    }, h('button', { onclick: () => quickGo(i + 1) }, question.title))),
+    h('li', { class: q.step === last ? 'active' : '' }, h('button', { onclick: () => quickGo(last) }, 'Review')));
+  const question = questionAt(q, q.step);
+  const body = q.step === 0 ? renderQuickStart() : (question ? renderQuickQuestion(question) : renderQuickReview());
+  return h('div', { id: 'quick-view' },
+    h('div', { class: 'view-head' }, h('h1', {}, 'Quick setup'),
+      h('span', { class: 'note' }, 'A few plain questions. Each answer sets several settings to common values; anything you skip stays as it is.')),
+    h('div', { class: 'quick-layout' }, steps, h('div', { class: 'quick-body' }, body)));
+}
+
+function quickButtons(nextLabel = 'Next') {
+  const q = state.quick;
+  return h('div', { class: 'quick-buttons' },
+    h('button', { disabled: q.step === 0, onclick: () => quickGo(q.step - 1) }, 'Back'),
+    h('button', { class: 'primary', onclick: () => quickGo(q.step + 1) }, nextLabel));
+}
+
+function renderQuickQuestion(question) {
+  const q = state.quick;
+  let body;
+  if (question.kind === 'choice') body = renderQuickChoice(question);
+  else if (question.kind === 'values') body = renderQuickValues(question);
+  else body = renderQuickChannel(question);
+  return h('section', { class: 'quick-card' },
+    h('h2', {}, question.title),
+    h('p', { class: 'quick-intro' }, question.intro),
+    body,
+    question.note ? h('p', { class: 'quick-note' }, question.note) : null,
+    q.error ? h('p', { class: 'quick-error' }, q.error) : null,
+    quickButtons(q.step === q.questions.length ? 'Review' : 'Next'));
+}
+
+function renderQuickStart() {
+  const q = state.quick;
+  const channels = q.questions.find((x) => x.kind === 'channel');
+  const canReplace = !!channels?.starter.length;
+  const option = (mode, label, detail) => h('div', { class: `quick-option${q.mode === mode ? ' chosen' : ''}` },
+    h('label', { class: 'quick-option-main' },
+      h('input', { type: 'radio', name: 'quick-start', checked: q.mode === mode, onchange: () => quickStart(mode) }),
+      h('span', { class: 'quick-option-text' }, h('span', { class: 'quick-option-label' }, label), h('span', { class: 'note' }, detail))));
+  return h('section', { class: 'quick-card' },
+    h('h2', {}, 'How do you want to start?'),
+    h('div', { class: 'quick-options' },
+      option('adjust', 'Adjust what the radio has now', 'Every question starts on "Leave as it is": only what you choose changes.'),
+      option('fresh', 'Start fresh', canReplace
+        ? `Every question starts on the recommended answer, and all channels are replaced by a starter set of ${plural(channels.starter.length, 'channel')}. You can still change each answer.`
+        : 'Every question starts on the recommended answer. You can still change each answer.')),
+    q.mode ? h('p', { class: 'note' }, 'Changing this resets your answers to the chosen starting point.') : null,
+    h('p', { class: 'quick-note' }, 'Settings the questions do not cover stay as they are. Nothing is changed until you apply the review, and nothing is written to the radio until you use Write to radio….'),
+    h('div', { class: 'quick-buttons' }, h('button', { class: 'primary', disabled: !q.mode, onclick: () => quickGo(1) }, 'Next')));
+}
+
+function renderQuickChoice(question) {
+  const q = state.quick;
+  const chosen = q.answers[question.id] ?? null;
+  const name = `quick-${question.id}`;
+  const current = question.answers.find((a) => a.id === question.current);
+  const option = (value, label, detail, settings, isNow, isRecommended = false) => {
+    const input = h('input', { type: 'radio', name, checked: chosen === value,
+      onchange: () => {
+        if (value == null) delete q.answers[question.id]; else q.answers[question.id] = value;
+        renderContent();
+      } });
+    const parts = [h('label', { class: 'quick-option-main' }, input,
+      h('span', { class: 'quick-option-text' },
+        h('span', { class: 'quick-option-label' }, label,
+          isNow ? h('span', { class: 'pill', title: 'The radio is set like this now' }, 'now') : null,
+          isRecommended ? h('span', { class: 'pill recommended', title: 'hyt\'s suggestion; preselected when starting fresh' }, 'recommended') : null),
+        detail ? h('span', { class: 'note' }, detail) : null))];
+    if (settings?.length) {
+      const key = `${question.id}/${value}`;
+      const details = h('details', { class: 'quick-changes', open: q.openDetails.has(key) },
+        h('summary', {}, 'What this sets'));
+      details.addEventListener('toggle', () => { if (details.open) q.openDetails.add(key); else q.openDetails.delete(key); });
+      const grid = h('div', { class: 'fields' });
+      for (const s of settings) {
+        appendField(grid, fieldLabel(s.setting, { title: s.setting }), h('span', { class: 'value' }, h('span', { class: 'ro' }, s.value)),
+          s.help, `quick:${question.id}:${value}:${s.setting}`);
+      }
+      details.append(grid);
+      parts.push(details);
+    }
+    return h('div', { class: `quick-option${chosen === value ? ' chosen' : ''}` }, ...parts);
+  };
+  return h('div', { class: 'quick-options' },
+    option(null, 'Leave as it is', current ? `Now: ${current.label}` : 'Keep what the radio has now.', null, false),
+    ...question.answers.map((a) => option(a.id, a.label, a.detail, a.settings, a.id === question.current, a.id === question.recommended)));
+}
+
+/** An input or select for a quick setup value; `onChange(text)` on every change. */
+function quickEditor(editor, value, onChange, extra = {}) {
+  if (editor.kind === 'choice') {
+    const options = editor.options.includes(value) || value === '' ? editor.options : [value, ...editor.options];
+    const select = h('select', extra, ...options.map((o) => h('option', { value: o }, o)));
+    select.value = value;
+    select.addEventListener('change', () => onChange(select.value));
+    return select;
+  }
+  const input = h('input', {
+    type: 'text', value, spellcheck: 'false',
+    maxlength: editor.kind === 'text' ? editor.max_len : null,
+    placeholder: editor.kind === 'number' ? editor.hint : null,
+    ...extra,
+  });
+  input.addEventListener('input', () => onChange(input.value));
+  return input;
+}
+
+function renderQuickValues(question) {
+  const q = state.quick;
+  const values = (q.values[question.id] ||= {});
+  const grid = h('div', { class: 'fields quick-fields' });
+  for (const f of question.fields) {
+    const value = h('span', { class: 'value' },
+      quickEditor(f.column.editor, values[f.id] ?? f.cell.text, (text) => {
+        if (text === f.cell.text) delete values[f.id]; else values[f.id] = text;
+      }),
+      f.column.unit ? h('span', { class: 'unit' }, f.column.unit) : null);
+    appendField(grid, fieldLabel(f.label, { title: `CPS: ${f.column.title}` }), value, f.column.help, helpKey(f.cell.field, f.column));
+    if (f.hint) grid.append(h('p', { class: 'note field-hint' }, f.hint));
+  }
+  return grid;
+}
+
+function renderQuickChannel(question) {
+  const q = state.quick;
+  const form = question;
+  const c = q.channel;
+  const mode = q.replace ? 'replace' : (c ? 'add' : 'none');
+  const pick = (m) => {
+    q.replace = m === 'replace';
+    q.channel = m === 'add' ? {
+      kind: form.kinds[0], name: '', rx: '', tx: '', repeater: false, color_code: '1', slot: form.slots[0] || '',
+      spacing: form.spacings.includes('12.5') ? '12.5' : (form.spacings[0] || ''), tone: '', tone_rx: false, add_to_zone: !!form.zone,
+    } : null;
+    q.error = null;
+    renderContent();
+  };
+  const option = (m, label, detail, extra) => h('div', { class: `quick-option${mode === m ? ' chosen' : ''}` },
+    h('label', { class: 'quick-option-main' },
+      h('input', { type: 'radio', name: 'quick-channel', checked: mode === m, onchange: () => pick(m) }),
+      h('span', { class: 'quick-option-text' }, h('span', { class: 'quick-option-label' }, label), detail ? h('span', { class: 'note' }, detail) : null)),
+    extra);
+  const choice = h('div', { class: 'quick-options' },
+    option('none', 'No, keep the channels as they are'),
+    form.kinds.length ? option('add', 'Add a channel') : null,
+    form.starter.length ? option('replace', 'Replace all channels with a starter set',
+      `Your ${plural(form.existing_digital, 'digital channel')} and ${plural(form.existing_analog, 'analog channel')} are replaced by these ${form.starter.length}.`,
+      renderStarter(form)) : null);
+  if (!c) return choice;
+
+  const grid = h('div', { class: 'fields quick-fields' });
+  const row = (label, control, hint) => {
+    grid.append(fieldLabel(label), h('span', { class: 'value' }, ...[control].flat()));
+    if (hint) grid.append(h('p', { class: 'note field-hint' }, hint));
+  };
+  const text = (key, extra = {}) => quickEditor({ kind: 'text', max_len: extra.maxlength }, c[key], (v) => { c[key] = v; }, extra);
+  const select = (key, options, rerender = false) => quickEditor({ kind: 'choice', options }, c[key], (v) => { c[key] = v; if (rerender) renderContent(); });
+  const check = (key, label) => h('label', { class: 'check' },
+    h('input', { type: 'checkbox', checked: !!c[key], onchange: (e) => { c[key] = e.target.checked; renderContent(); } }), label);
+
+  if (form.kinds.length > 1) {
+    row('Type', h('span', { class: 'segmented' }, ...form.kinds.map((k) => h('label', {},
+      h('input', { type: 'radio', name: 'quick-channel-kind', checked: c.kind === k, onchange: () => { c.kind = k; renderContent(); } }),
+      KIND_LABEL[k]))),
+    'Digital (DMR) for other digital radios and DMR repeaters; analog (FM) for older radios and analog repeaters.');
+  }
+  row('Name', text('name', { maxlength: form.name_max_len, placeholder: 'e.g. Base, Club, Simplex 1' }));
+  row('Frequency', [text('rx', { placeholder: 'e.g. 439.9875' }), h('span', { class: 'unit' }, 'MHz')], `Allowed: ${form.frequency_hint}`);
+  row('Repeater', check('repeater', 'Talk through a repeater (it listens on another frequency)'));
+  if (c.repeater) {
+    row('Repeater input', [text('tx', { placeholder: 'e.g. 432.3875' }), h('span', { class: 'unit' }, 'MHz')],
+      "The frequency the radio transmits on: the repeater's input. The frequency above is the one it listens to.");
+  }
+  if (c.kind === 'digital') {
+    row('Colour code', text('color_code', { placeholder: form.color_code_hint }),
+      `${form.color_code_hint}. Must match the other radios or the repeater; 1 is common.`);
+    if (form.slots.length) row('Time slot', select('slot', form.slots), 'Must match the other radios or the repeater.');
+  } else {
+    if (form.spacings.length) row('Channel spacing', [select('spacing', form.spacings), h('span', { class: 'unit' }, 'kHz')], '12.5 kHz is common today.');
+    row('Tone (CTCSS)', [select('tone', ['', ...form.tones], true), h('span', { class: 'unit' }, 'Hz')],
+      'Sent when transmitting; many repeaters only respond to their tone. Leave empty for none.');
+    if (c.tone) row('Receive', check('tone_rx', 'Only open the speaker for signals with this tone'));
+  }
+  if (form.zone) row('Zone', check('add_to_zone', `Add it to zone "${form.zone}"`));
+  // The select for an empty tone shows a blank entry; label it.
+  for (const o of grid.querySelectorAll('option[value=""]')) o.textContent = 'None';
+  return h('div', {}, choice, grid);
+}
+
+/** The starter channels and what replacing does, collapsed under the replace option. */
+function renderStarter(form) {
+  const q = state.quick;
+  const key = 'channel/starter';
+  const details = h('details', { class: 'quick-changes', open: q.openDetails.has(key) },
+    h('summary', {}, 'Which channels'),
+    h('table', { class: 'grid starter' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Type'), h('th', {}, 'Frequency'), h('th', {}, ''))),
+      h('tbody', {}, form.starter.map((s) => h('tr', {},
+        h('td', {}, s.name), h('td', {}, KIND_LABEL[s.kind]), h('td', {}, `${s.frequency} MHz`), h('td', { class: 'note' }, s.detail))))),
+    h('p', { class: 'note' }, 'Existing channels are reset to CPS\'s channel template and reused in place, so the radio\'s current channel and scan lists stay valid; extra channels are removed. '
+      + (form.zone ? `Zone "${form.zone}" then holds exactly these channels.` : '')
+      + (form.other_zones ? ` Your other ${plural(form.other_zones, 'zone')} keep their channel numbers: check them under Zones afterwards.` : '')),
+    h('p', { class: 'note' }, 'PMR446 frequencies are licence-free only for approved PMR446 radios (fixed antenna, 0.5 W). Check that you may use them with this radio where you are.'));
+  details.addEventListener('toggle', () => { if (details.open) q.openDetails.add(key); else q.openDetails.delete(key); });
+  return details;
+}
+
+function renderQuickReview() {
+  const q = state.quick;
+  const goBack = h('button', { onclick: () => quickGo(q.questions.length) }, 'Back');
+  if (q.error) {
+    const culprit = q.questions.findIndex((question) => q.error.startsWith(question.title));
+    return h('section', { class: 'quick-card' },
+      h('h2', {}, 'Review'),
+      h('p', { class: 'quick-error' }, q.error),
+      h('p', { class: 'note' }, 'Nothing was changed.'),
+      h('div', { class: 'quick-buttons' }, goBack,
+        culprit >= 0 ? h('button', { class: 'primary', onclick: () => quickGo(culprit + 1) }, `Fix "${q.questions[culprit].title}"`) : null));
+  }
+  const r = q.review;
+  if (!r) return h('section', { class: 'quick-card' }, h('p', { class: 'note' }, 'Working…'));
+  if (!r.changes.length) {
+    return h('section', { class: 'quick-card' },
+      h('h2', {}, 'Review'),
+      h('p', {}, 'Nothing to change: every answer is either skipped or what the radio already has.'),
+      h('div', { class: 'quick-buttons' }, goBack));
+  }
+  return h('section', { class: 'quick-card wide' },
+    h('h2', {}, 'Review'),
+    h('p', {}, `Your answers change ${plural(r.changes.length, 'setting')}:`),
+    h('table', { class: 'grid changes' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Where'), h('th', {}, 'Setting'), h('th', {}, 'Now'), h('th', {}, 'After'))),
+      h('tbody', {}, r.changes.map((c) => h('tr', {}, h('td', {}, c.place), h('td', {}, c.setting), h('td', {}, c.old), h('td', { class: 'changed' }, c.new))))),
+    ...r.notes.map((n) => h('p', { class: 'quick-note' }, n)),
+    h('p', { class: 'note' }, 'They become pending changes like any edit: you can revert them one by one under Changes. Nothing is written to the radio until you use Write to radio….'),
+    h('div', { class: 'quick-buttons' }, goBack, h('button', { class: 'primary', onclick: quickApply }, `Apply ${plural(r.changes.length, 'change')}`)));
 }
 
 // ---------- actions ----------
@@ -925,11 +1454,18 @@ async function init() {
     if ($('menu-more').hidden) openMenu(); else closeMenu();
   });
   document.addEventListener('click', (e) => { if (!$('menu-more').hidden && !$('menu-more').contains(e.target)) closeMenu(); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeMenu(); hideHelpPopover(); } });
+  document.addEventListener('click', (e) => { if (!$('help-pop').hidden && !$('help-pop').contains(e.target)) hideHelpPopover(); });
+  $('content').addEventListener('scroll', hideHelpPopover);
+  window.addEventListener('resize', hideHelpPopover);
   $('mi-csv-export').addEventListener('click', menuAction(onExportCsv));
   $('mi-csv-import').addEventListener('click', menuAction(onImportCsv));
   $('mi-tpl-export').addEventListener('click', menuAction(onExportTemplate));
   $('mi-tpl-import').addEventListener('click', menuAction(onImportTemplate));
+  loadHiddenPrefs();
+  syncHiddenMenu();
+  $('mi-show-licence').addEventListener('click', menuAction(() => setHiddenPref('licence', !state.showLicence)));
+  $('mi-show-internal').addEventListener('click', menuAction(() => setHiddenPref('internal', !state.showInternal)));
   $('tpl-export-browse').addEventListener('click', async () => {
     const p = await pickSavePath({ title: 'Save the CPS template as', defaultPath: $('tpl-export-path').value, filters: [{ name: 'CPS template', extensions: ['tpl'] }] });
     if (p) $('tpl-export-path').value = p;

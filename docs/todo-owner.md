@@ -13,6 +13,23 @@ Tick items off here (or delete them) as we go through them.
 - [ ] **Radio log of the night**: `captures/unattended_2026-11-19/log.md` lists every read/write I did and what
   the radio holds now.
 
+- [ ] **Field help and Quick setup** (2026-11-19, tested offline only): click "?" next to a field name
+  (detail panel, Settings, table headers) for CPS's own description. "Quick setup" (top of the left list)
+  asks 10 plain questions and shows exactly what would change before applying. Check the questions and
+  preset values (`crates/hyt-core/src/quick.rs`, `QUESTIONS`): are they the ones a beginner needs, and are
+  the defaults right for how you use the radio?
+- [ ] **Quick setup "Start fresh" starter channels**: DMR 1–4 (446.10625–446.14375 MHz, colour code 1,
+  slot 1) and PMR 1–8 (446.00625–446.09375 MHz, 12.5 kHz, no tone), all low power, are my placeholder
+  choice (`STARTER` in `crates/hyt-core/src/quick.rs`). Replace them with the channels you actually use. Note
+  that the starter channels talk to contact "Call 1" (CPS's template), not to your old TX contact 10.
+
+- [ ] **Which settings CPS shows** (2026-11-19): the app now hides what CPS hides (More ▾ has two switches to
+  show licence-limited and internal fields). Please check these CPS screens against the app
+  (details in `docs/research-cps-visibility.md`, "Owner checks"): the programmable keys page (are SK1/SK2
+  settings shown?), the Conventional tree below Emergency (no Roam, no Analog Service), the analog channel
+  dialog (no Two Tone fields, RX Squelch Mode only Carrier and CTCSS/CDCSS), the Analog Emergency page (only
+  Emergency Type), and a key-function drop-down (option "Scramble").
+
 ## Needs CPS (recordings or screens; CPS runs elevated, so only you can record it)
 
 How to record: `docs/capture-howto.md`. Each recording is a CPS read + one change + CPS write.
@@ -28,6 +45,12 @@ How to record: `docs/capture-howto.md`. Each recording is a CPS read + one chang
 - [ ] **Reorder** a channel and a contact in CPS (Up/Down) → reordering in the app (renumbering rules).
 - [ ] **Encryption keys** (file 242, today never written): record CPS adding one *test* key → key list editing.
   Optional; only if you use encryption.
+- [ ] **When the Hytera licences arrive** (Basic Encryption ordered 2026-11-19): copy the `.zip` (keep the original
+  untouched) and run `hyt licence check <zip> --radio captures/gui-read_2026-11-19`. It does CPS's checks offline and
+  says whether CPS V1.5.24 would send it. Expected: refused for Basic Encryption on the BP515 U1 (CPS V1.5.24's
+  model rule); then ask Hytera which CPS version the licence is for. Before installing with any CPS, start the
+  recorder (`tools/start_tap.cmd`, elevated) so the install is recorded. Afterwards: `hyt licence status --port COM3`
+  and a `hyt read` (Basic Encryption should be 1 in file 18).
 - [ ] **Password/lock, licence activation, radio reset, reading a locked radio**: out of scope unless you
   want them; each needs a recording and carries risk (see `docs/cps-features.md`, gap 15).
 - [ ] **Frequency limits by model (open question 5d)**: in CPS, type 399.995 and 470.005 MHz into a channel's RX
