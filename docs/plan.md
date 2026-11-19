@@ -157,6 +157,13 @@ line for validation errors and progress.
   names added/removed records and zone members. `Workspace` now keeps the edit form `apply_edits` takes (original
   indexes, opened folder's channel numbering) and the decoded result it shows; positions match between them.
   Adding/removing zones and contacts waits for CPS recordings (open question 3).
+- **List editors** (built 2026-11-20, offline only): a "Lists" section in the navigation with RX group, scan
+  and roam lists, one-touch calls, preset channels, quick messages, phone contacts/systems, HDC1200
+  systems/contacts and 2-Tone systems/contacts/personalities (only lists the radio has; files the profile never
+  writes, e.g. the E2EE key list, are left out). Values are edited through `Workspace::set_value` like the other
+  tables; members of scan/roam/RX group lists are shown read-only by name in the detail panel. Adding/removing
+  records or members is not offered (no CPS recording yet). Library: `hyt-core/src/lists.rs`; test
+  `tests/list_editors.rs`.
 - Later: CPS's page/group structure from `XMLToolCompactData.sdf` for the other settings; `hyt rcdb import`
   for macOS/Linux; installers via `cargo tauri build` in CI.
 

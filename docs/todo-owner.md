@@ -25,6 +25,11 @@ How to record: `docs/capture-howto.md`. Each recording is a CPS read + one chang
   (the radio's current channel) → open questions 3 and 5c; today such removals are refused.
 - [ ] **Add and remove a scan list member, an RX group list member, a roam list member** → member editing in
   those lists (today read-only).
+- [ ] **Reorder** a channel and a contact in CPS (Up/Down) → reordering in the app (renumbering rules).
+- [ ] **Encryption keys** (file 242, today never written): record CPS adding one *test* key → key list editing.
+  Optional; only if you use encryption.
+- [ ] **Password/lock, licence activation, radio reset, reading a locked radio**: out of scope unless you
+  want them; each needs a recording and carries risk (see `docs/cps-features.md`, gap 15).
 - [ ] **One CPS screenshot** of the digital channel table showing the "TX Contact" and "RX Group List" columns
   (open question 5b: confirms how the app names them).
 

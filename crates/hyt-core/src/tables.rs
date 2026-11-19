@@ -1,6 +1,7 @@
 //! Tables of the main settings (digital and analog channels, zones, contacts), every field of one
 //! record, and the pending changes, labelled with CPS's option text, for the GUI. Built from the
-//! workspace's view (the configuration as it will be written).
+//! workspace's view (the configuration as it will be written). The other lists (scan, roam, RX
+//! group lists, …) are in [`crate::lists`]; [`table`] also builds those (`list:<file name>` ids).
 //!
 //! Programming passwords never appear. Field and file names are those of RCDB V1.5.24.000.
 
@@ -74,6 +75,9 @@ pub struct Row {
     /// For zones: the zone's members.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ZoneMember>>,
+    /// For two-level lists other than zones (scan, roam, RX group lists): the members, read-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub list_members: Option<Vec<crate::lists::ListMember>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -97,6 +101,12 @@ pub struct Table {
     pub resizable: bool,
     pub columns: Vec<Column>,
     pub rows: Vec<Row>,
+    /// What one record is called (e.g. "Scan list"), for list tables.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    /// Shown above the table (e.g. what cannot be changed yet).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One field in the detail view of a record.
@@ -200,12 +210,12 @@ const ZONE_MEMBERS_FILE: &str = "QEU_C_Zone";
 /// Ids of the tables [`table`] builds, in display order.
 pub const TABLE_IDS: [&str; 4] = ["digital", "analog", "zones", "contacts"];
 
-fn file<'a>(files: &'a [DecodedFile], name: &str) -> Option<&'a DecodedFile> {
+pub(crate) fn file<'a>(files: &'a [DecodedFile], name: &str) -> Option<&'a DecodedFile> {
     files.iter().find(|f| f.name == name)
 }
 
 /// Text CPS would show for `value` of field `def`, without the unit when `strip_unit`.
-fn display(options: Option<&Options>, def: Option<&FieldDef>, key: &str, value: &Value, strip_unit: bool) -> String {
+pub(crate) fn display(options: Option<&Options>, def: Option<&FieldDef>, key: &str, value: &Value, strip_unit: bool) -> String {
     if is_secret(key) {
         return "(hidden)".into();
     }
@@ -301,6 +311,7 @@ fn record_table(ws: &Workspace, spec: &TableSpec) -> Option<Table> {
                 })
                 .collect(),
             members: None,
+            list_members: None,
         })
         .collect();
     Some(Table {
@@ -310,11 +321,13 @@ fn record_table(ws: &Workspace, spec: &TableSpec) -> Option<Table> {
         resizable: spec.resizable,
         columns,
         rows,
+        item: None,
+        note: None,
     })
 }
 
 /// Alias of channel `number` (1-based) of member type `kind` (0 digital, 1 analog) in `files`.
-fn channel_alias(files: &[DecodedFile], kind: i64, number: i64) -> Option<String> {
+pub(crate) fn channel_alias(files: &[DecodedFile], kind: i64, number: i64) -> Option<String> {
     let list = ChannelKind::from_member_type(kind)?.file();
     let index = usize::try_from(number.checked_sub(1)?).ok()?;
     let r = file(files, list)?.blocks.first()?.records.get(index)?;
@@ -389,13 +402,15 @@ fn zones_table(ws: &Workspace) -> Option<Table> {
     Some(table)
 }
 
-/// The table `id` (one of [`TABLE_IDS`]); `None` if the configuration has no such file.
+/// The table `id` (one of [`TABLE_IDS`], or a list id from [`crate::lists::index`]); `None` if
+/// the configuration has no such file.
 pub fn table(ws: &Workspace, id: &str) -> Option<Table> {
     match id {
         "digital" => record_table(ws, &DIGITAL),
         "analog" => record_table(ws, &ANALOG),
         "contacts" => record_table(ws, &CONTACTS),
         "zones" => zones_table(ws),
+        _ if id.starts_with(crate::lists::ID_PREFIX) => crate::lists::table(ws, id),
         _ => None,
     }
 }
@@ -494,8 +509,11 @@ pub fn change_list(ws: &Workspace) -> Vec<ChangeView> {
                 };
             }
             let listed = matches!(c.file_name.as_str(), "QEU_C_DChannel" | "QEU_C_AChannel" | "QEU_C_ZoneAlias" | "QEU_C_Zone" | "QEU_C_DContact");
+            let list_place = at.as_ref().and_then(|a| crate::lists::place_of(ws, &c.file_name, a));
             let mut setting_label = None;
-            if !structural && !listed && let Some(p) = crate::settings::place_of(ws, c.file_id, c.block_id, &c.key) {
+            if let Some(p) = list_place {
+                place_text = p;
+            } else if !structural && !listed && let Some(p) = crate::settings::place_of(ws, c.file_id, c.block_id, &c.key) {
                 place_text = p;
                 setting_label = crate::settings::label_of(ws, c.file_id, c.block_id, &c.key);
             }

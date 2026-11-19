@@ -147,7 +147,7 @@ fn slug(title: &str) -> String {
     title.to_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
 }
 
-fn profile(ws: &Workspace) -> &'static ModelProfile {
+pub(crate) fn profile(ws: &Workspace) -> &'static ModelProfile {
     PROFILES.iter().copied().find(|p| p.key == ws.manifest().profile).unwrap_or(&GENERIC_G2)
 }
 

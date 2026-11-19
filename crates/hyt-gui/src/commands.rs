@@ -137,6 +137,8 @@ pub struct Overview {
     has_settings: bool,
     changes: usize,
     tables: Vec<TableInfo>,
+    /// Other lists the configuration has (scan, roam, RX group lists, …), opened with `get_table`.
+    lists: Vec<hyt_core::lists::ListInfo>,
 }
 
 fn overview(ws: &Workspace) -> Overview {
@@ -157,6 +159,7 @@ fn overview(ws: &Workspace) -> Overview {
             .filter_map(|id| tables::table(ws, id))
             .map(|t| TableInfo { id: t.id, title: t.title, rows: t.rows.len(), capacity: t.capacity })
             .collect(),
+        lists: hyt_core::lists::index(ws),
     }
 }
 

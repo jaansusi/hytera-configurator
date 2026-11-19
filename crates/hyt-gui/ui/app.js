@@ -8,7 +8,7 @@ const { open: pickPath } = window.__TAURI__.dialog;
 const state = {
   info: null,      // app_info
   overview: null,  // open configuration (null when nothing is open)
-  view: 'digital', // table id or 'changes'
+  view: 'digital', // table id (incl. 'list:<file>'), 'settings' or 'changes'
   table: null,     // current table
   changes: [],     // change list (changes view)
   selected: null,  // selected row index in state.table
@@ -228,9 +228,12 @@ function renderNav() {
       await refresh();
     },
   }, h('span', {}, title), extra);
+  const lists = o.lists || [];
   nav.replaceChildren(
     ...o.tables.map((t) => item(t.id, t.title, h('span', { class: 'count' }, `${t.rows}/${t.capacity}`))),
     ...(o.has_settings ? [item('settings', 'Settings', null)] : []),
+    ...(lists.length ? [h('div', { class: 'nav-heading' }, 'Lists')] : []),
+    ...lists.map((t) => item(t.id, t.title, h('span', { class: 'count' }, `${t.rows}/${t.capacity}`))),
     h('hr'),
     item('changes', 'Changes', o.changes ? h('span', { class: 'badge' }, o.changes) : h('span', { class: 'count' }, '0')),
   );
@@ -268,14 +271,17 @@ function renderContent() {
     h('button', { class: 'danger', onclick: () => onRemoveChannel(kind, selectedRow), disabled: !selectedRow, title: selectedRow ? null : 'Select a channel first' }, 'Remove channel')) : null;
   const head = h('div', { class: 'view-head' },
     h('h1', {}, t.title),
-    h('span', { class: 'note' }, `${t.rows.length} of ${t.capacity} · double-click a cell to edit · Enter saves, Esc cancels`),
+    h('span', { class: 'note' }, t.rows.length
+      ? `${t.rows.length} of ${t.capacity} · double-click a cell to edit · Enter saves, Esc cancels`
+      : `0 of ${t.capacity}`),
     actions);
+  const note = t.note ? h('p', { class: 'note table-note' }, t.note) : null;
   const table = h('table', { class: 'grid' },
     h('thead', {}, h('tr', {},
       h('th', {}, 'No.'),
       t.columns.map((col) => h('th', { title: col.key }, col.title, col.unit ? h('small', {}, col.unit) : null)))),
     h('tbody', {}, t.rows.map((row, i) => renderRow(t, row, i))));
-  c.replaceChildren(head, table);
+  c.replaceChildren(...[head, note, table].filter(Boolean));
 }
 
 function renderRow(t, row, i) {
@@ -364,7 +370,7 @@ function renderDetail() {
   }
   const row = state.table.rows[state.selected];
   const titleCell = row.cells[0];
-  const kind = { digital: 'Digital channel', analog: 'Analog channel', zones: 'Zone', contacts: 'Contact' }[state.table.id] || 'Record';
+  const kind = state.table.item || { digital: 'Digital channel', analog: 'Analog channel', zones: 'Zone', contacts: 'Contact' }[state.table.id] || 'Record';
   const parts = [h('div', { class: 'detail-head' }, h('h2', {}, `${kind} ${row.no}`), h('span', { class: 'note' }, titleCell.text))];
 
   if (row.members) {
@@ -388,6 +394,19 @@ function renderDetail() {
         const o = available[Number(select.value)];
         act('add_zone_member', { zone, kind: o.kind, channel: o.number }, `Added ${o.label} to the zone`);
       } }, 'Add to zone')));
+  }
+
+  if (row.list_members) {
+    // Scan, roam and RX group lists: members by name, read-only.
+    const title = state.table.columns[state.table.columns.length - 1]?.title || 'Members';
+    parts.push(h('h3', {}, `${title} (${row.list_members.length})`));
+    parts.push(row.list_members.length
+      ? h('table', { class: 'grid members-table' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'No.'), h('th', {}, 'Name'), h('th', {}, 'Refers to'))),
+        h('tbody', {}, row.list_members.map((m) => h('tr', {},
+          h('td', { class: 'no' }, m.no), h('td', {}, m.name), h('td', {}, m.refers_to)))))
+      : h('p', { class: 'note' }, 'No members.'));
+    parts.push(h('p', { class: 'note' }, 'Members are shown read-only: changing them needs a recording of CPS doing it first.'));
   }
 
   parts.push(h('h3', {}, 'All settings'));

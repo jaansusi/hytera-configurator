@@ -100,9 +100,11 @@ nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow-y: auto;
 }
 nav button {
   display: flex;
+  flex: none;
   justify-content: space-between;
   border: none;
   background: none;
@@ -113,6 +115,7 @@ nav button.active { background: var(--accent-soft); color: var(--accent); font-w
 nav .count { color: var(--muted); font-weight: 400; font-size: 12px; }
 nav .badge { background: var(--changed-line); color: #fff; border-radius: 9px; padding: 0 7px; font-size: 12px; font-weight: 600; }
 nav hr { border: none; border-top: 1px solid var(--line); margin: 8px 4px; }
+nav .nav-heading { margin: 10px 10px 2px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 
 #content { flex: 1; min-width: 0; overflow: auto; padding: 12px; }
 #detail {

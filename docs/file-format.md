@@ -203,6 +203,29 @@ lists, `Scan List Roam List` 0–64 with 64 scan lists, analog `Scan List` 0 = N
 roam lists according to its `Use Scan or Roam List` (0 None, 1 scan, 2 roam). `TX Contacts ID` is a call ID; the
 GUI names it after the contact with that call ID (both channels hold 10, which no contact has).
 
+**List pairs and their members (2026-11-20):**
+
+- *Observed* (layout and the BP515's files): an RX group list member (`QEU_C_RxGrpList` 80, block 607) is
+  `Call ID` (Uint, offset 0) + `Reserved 01` (Uint); scan list members (84) are `Channel List` (Ushort) +
+  `Channel Type` (Byte, 0 Digital / 1 Analog) like zone members, with 65535 = "Selected"; roam list members (38)
+  are `Channel List` only (65535 = "Selected"). Each list record has 16 member slots (scan, roam and RX group).
+  The paired files have **different capacities**: RX group lists 16 (members, 80) vs 32 (aliases, 81), scan
+  lists 8 (members, 84) vs 64 (settings, 85), roam lists 8 vs 8. The GUI shows the smaller as the capacity.
+  The BP515 has one of each: `Rx Group List 1` (0 members), `Scan List 1` and `Roam List 1` (one member each,
+  "Selected").
+- *Inferred*: an RX group list member's `Call ID` refers to the contact with that call ID (like a digital
+  channel's `TX Contacts ID`); the GUI names it only when that is unambiguous (one contact with the ID, or one
+  group-call contact among several). Not checked on CPS's screen (this radio's list is empty).
+- *Unknown*: what the scan config's `Designated Channel` (RCDB range 1–1,024 + `DesignatedCH ChType`) and
+  `Priority Channel 1/2` (0 None, 65535 resp. 1 "Selected", 1–31 resp. 1–30 + type fields) count: channel
+  numbers or positions in the scan list. They are shown as numbers. Likewise HDC1200 contacts' `HDC System`,
+  2-Tone contacts' `TwoTone System` and 2-Tone personalities' `Call List n` (position vs. the systems' own
+  `System ID`/`SystemID` fields) are shown as numbers.
+- *Observed* (`ui.json`): CPS shows these lists on Conventional › Basic Setting (One Touch Call, Preset
+  Channel), Digital Setting (Quick Message; Encrypt = E2EE key list 242, never written), Contact (RX Group
+  List, Phone List), Scan, Roam, Phone (Phone System) and Analog Service (HDC1200, 2-Tone). Call logs (74, 243,
+  244), Bluetooth pairings (245) and the XPT (`PTE`) files are on no BP515 screen.
+
 **Unused slots hold junk:** `QEU_C_RxGrpList` (80) has 16 member slots and 0 members; CPS writes leftover memory
 into the unused slot 0, which is why bytes 260–267 differ on every CPS write. It has no meaning.
 
