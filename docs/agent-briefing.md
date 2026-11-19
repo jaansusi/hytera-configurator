@@ -35,7 +35,7 @@ members all work and are verified against CPS recordings and on the real radio.
 | What | Where |
 |---|---|
 | CPS install | `C:\Program Files (x86)\Hytera\CPSStarter\CPS\V1.5.24.000.0003` (`RcdbJsons\V1.5.24.000.txt` = field layouts; `RCDB\FileID`, `RCDB\TableLink`; `XMLToolCompactData.sdf` = parameter/UI database, SQL Server Compact 4.0) |
-| Exported Hytera data | `%LOCALAPPDATA%\hyt\rcdb\V1.5.24.000\options.json` (labels, units, allowed values) and `ui.json` (CPS screen structure), from `tools/export-rcdb-options.ps1` |
+| Exported Hytera data | `%LOCALAPPDATA%\hyt\rcdb\V1.5.24.000\options.json` (labels, units, allowed values), `ui.json` (CPS screen structure) and `models.json` (model-number ranges/defaults/visibility, `hytera-codeplug/src/models.rs`), from `tools/export-rcdb-options.ps1` |
 | Radio's current configuration | `captures/unattended_2026-11-19/start/` (a `hyt read` folder: `NNN_Name.bin` + `manifest.json`) |
 | CPS recordings | `captures/*.jsonl` (+ `_files` folders with what CPS read/wrote); see `docs/capture-howto.md` |
 | Knowledge base | `docs/protocol.md`, `docs/file-format.md`, `docs/cps-internals.md`, `docs/open-questions.md`, `docs/plan.md`, `docs/cps-features.md` (feature inventory) |

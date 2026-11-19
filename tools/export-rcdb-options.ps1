@@ -8,7 +8,9 @@
   the database; CPS's own file is only read. Only English entries (language_type 1) are exported.
   The output contains Hytera data: keep it out of the source tree (default: your user data folder).
 
-  Output: { rcdb_version, source, params: [ { id, name, unit, options: [ { variant, index, range } ] } ] }
+  Output: options.json { rcdb_version, source, params: [ { id, name, unit, options: [ { variant, index, range } ] } ] },
+  ui.json (CPS's screen tree) and models.json (model-number rules: conditions, ranges, defaults,
+  visible, enable, ui_conditions, ui_links; rows as arrays), all in the same folder.
   `range` is CPS's text, e.g. "RAM:0,UI:High" or "RAM:[3,99],UI:[15,495],Step:1"; `variant` is CPS's
   `different_version` (0 = always; other values are model/firmware variants).
 
@@ -98,6 +100,21 @@ try {
     $ui.groups = Get-Table "SELECT Id, NameEn FROM UiGroup" @("i", "s")
     $ui.group_children = Get-Table "SELECT ParentGroupId, ChildGroupId, [Index] FROM UiGroupsLink" @("i", "i", "i")
     $ui.group_params = Get-Table "SELECT l.GroupId, p.id, l.[Index] FROM UiGroupParamLink l JOIN Param p ON p.param_id = l.ParamId" @("i", "i", "i")
+
+    # Model-number rules: CPS narrows ranges, defaults and visibility by the radio's model number
+    # (info item 0x0000, e.g. "55P10B00-1L0BAPU1U1..."). A rule group matches when every condition
+    # holds: the model number without '-', characters start..start+length-1 (1-based), is one of
+    # the comma-separated values. Parameters are given by their layout id (Param.id); the ModelNumber*
+    # tables refer to Param.param_id. See docs/file-format.md section 2b.
+    $models = [ordered]@{ rcdb_version = $version; source = "XMLToolCompactData.sdf ($CpsDir)" }
+    $models.conditions = Get-Table "SELECT m.model_number_group_id, m.start_index, m.length, m.value, p.id FROM ModelNumberMainGroup m JOIN Param p ON p.param_id = m.param_id ORDER BY m.model_number_group_id, m.model_number_main_group_id" @("i", "i", "i", "s", "i")
+    $models.ranges = Get-Table "SELECT r.default_group_id, p.id, r.[Index], r.range_value FROM ModelNumberRangeGroupLink r JOIN Param p ON p.param_id = r.param_id WHERE r.language_type = 1 ORDER BY r.default_group_id, p.id, r.[Index]" @("i", "i", "i", "s")
+    $models.defaults = Get-Table "SELECT d.model_number_group_id, p.id, d.default_en FROM ModelNumberDefaultGroupLink d JOIN Param p ON p.param_id = d.param_id ORDER BY d.model_number_group_id, p.id" @("i", "i", "s")
+    $models.visible = Get-Table "SELECT v.default_group_id, p.id, v.is_visible FROM ModelNumberVisibleGroupLink v JOIN Param p ON p.param_id = v.param_id ORDER BY v.default_group_id, p.id" @("i", "i", "i")
+    $models.enable = Get-Table "SELECT e.model_number_group_id, p.id, e.is_enable FROM ModelNumberEnableGroupLink e JOIN Param p ON p.param_id = e.param_id ORDER BY e.model_number_group_id, p.id" @("i", "i", "i")
+    # Screen parts shown/hidden by model number (meaning of link types not yet confirmed).
+    $models.ui_conditions = Get-Table "SELECT model_number_group_id, start_index, length, value, releted_id, related_linkType FROM ModelNumberUIMainGroup ORDER BY model_number_group_id, id" @("i", "i", "i", "s", "i", "i")
+    $models.ui_links = Get-Table "SELECT model_number_group_id, link_type, relatedUI_id, related_property_type, property_value FROM ModelNumberUILink ORDER BY model_number_group_id, link_id" @("i", "i", "i", "i", "s")
     $conn.Close()
 }
 finally {
@@ -122,3 +139,8 @@ $uiFile = Join-Path (Split-Path $OutFile) "ui.json"
 $uiJson = $ui | ConvertTo-Json -Depth 4 -Compress
 [IO.File]::WriteAllText($uiFile, $uiJson, (New-Object System.Text.UTF8Encoding($false)))
 Write-Output "Exported CPS's screen structure ($($ui.pages.Count) pages, $($ui.group_params.Count) parameter links) to $uiFile"
+
+$modelsFile = Join-Path (Split-Path $OutFile) "models.json"
+$modelsJson = $models | ConvertTo-Json -Depth 4 -Compress
+[IO.File]::WriteAllText($modelsFile, $modelsJson, (New-Object System.Text.UTF8Encoding($false)))
+Write-Output "Exported model-number rules ($($models.conditions.Count) conditions, $($models.ranges.Count) ranges, $($models.defaults.Count) defaults, $($models.visible.Count) visibility rows) to $modelsFile"

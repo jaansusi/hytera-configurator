@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::models::{ModelOverrides, ModelRules};
 use crate::{Error, Result};
 
 /// hyt's per-user folder for Hytera data: `%LOCALAPPDATA%\hyt\rcdb` on Windows,
@@ -90,10 +91,33 @@ pub struct ParamInfo {
     pub scales: Vec<Scale>,
 }
 
+impl ParamInfo {
+    /// Add one CPS option text.
+    fn push(&mut self, text: &str, variant: u32) {
+        match parse_option(text) {
+            Some(ParsedOption::Choice { raw, label }) => self.choices.push(Choice { raw, label, variant }),
+            Some(ParsedOption::Scale { raw, ui, step }) => self.scales.push(Scale {
+                raw_min: raw.0,
+                raw_max: raw.1,
+                ui_min: ui.0,
+                ui_max: ui.1,
+                step,
+                variant,
+            }),
+            // All 3,552 options of V1.5.24.000 parse; unknown future shapes are skipped.
+            None => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     pub rcdb_version: String,
     params: HashMap<u32, ParamInfo>,
+    /// Generic entries of parameters that [`Options::with_model`] narrowed, kept so values outside
+    /// the model's range (e.g. read from the radio) are still shown with CPS's label.
+    generic: HashMap<u32, ParamInfo>,
+    model: Option<ModelOverrides>,
 }
 
 #[derive(Deserialize)]
@@ -151,25 +175,54 @@ impl Options {
         for p in raw.params {
             let mut info = ParamInfo { name: p.name, unit: p.unit, ..Default::default() };
             for o in p.options {
-                match parse_option(&o.range) {
-                    Some(ParsedOption::Choice { raw, label }) => {
-                        info.choices.push(Choice { raw, label, variant: o.variant })
-                    }
-                    Some(ParsedOption::Scale { raw, ui, step }) => info.scales.push(Scale {
-                        raw_min: raw.0,
-                        raw_max: raw.1,
-                        ui_min: ui.0,
-                        ui_max: ui.1,
-                        step,
-                        variant: o.variant,
-                    }),
-                    // All 3,552 options of V1.5.24.000 parse; unknown future shapes are skipped.
-                    None => {}
-                }
+                info.push(&o.range, o.variant);
             }
             params.insert(p.id, info);
         }
-        Ok(Options { rcdb_version: raw.rcdb_version, params })
+        Ok(Options { rcdb_version: raw.rcdb_version, params, ..Default::default() })
+    }
+
+    /// These options narrowed to `model_number` by `rules` (see [`Options::with_model`]).
+    pub fn for_model(&self, rules: &ModelRules, model_number: &str) -> Options {
+        self.with_model(rules.for_model(model_number))
+    }
+
+    /// These options with the model's ranges replacing the generic choices and scales of each
+    /// parameter they name (CPS shows and accepts only those for that model; inferred from the
+    /// `ModelNumberRangeGroupLink` rows, which repeat the generic entries minus the excluded ones).
+    /// Parameters without a model range keep their generic options. Defaults and visibility are
+    /// kept for [`Options::model_default`] / [`Options::model_visible`].
+    pub fn with_model(&self, model: ModelOverrides) -> Options {
+        let mut out = self.clone();
+        for (id, texts) in &model.ranges {
+            let Some(generic) = self.params.get(id) else { continue };
+            let mut info = ParamInfo { name: generic.name.clone(), unit: generic.unit.clone(), ..Default::default() };
+            for text in texts {
+                info.push(text, 0);
+            }
+            if info.choices.is_empty() && info.scales.is_empty() {
+                continue;
+            }
+            out.generic.entry(*id).or_insert_with(|| generic.clone());
+            out.params.insert(*id, info);
+        }
+        out.model = Some(model);
+        out
+    }
+
+    /// The model rules applied by [`Options::with_model`], if any.
+    pub fn model(&self) -> Option<&ModelOverrides> {
+        self.model.as_ref()
+    }
+
+    /// The model's default value text for parameter `id` (raw number or CPS text), if it has one.
+    pub fn model_default(&self, id: u32) -> Option<&str> {
+        self.model.as_ref()?.defaults.get(&id).map(String::as_str)
+    }
+
+    /// Whether CPS shows parameter `id` for this model, when a model rule says so.
+    pub fn model_visible(&self, id: u32) -> Option<bool> {
+        self.model.as_ref()?.visible.get(&id).copied()
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -192,6 +245,10 @@ impl Options {
     /// number with its unit. `None` when nothing is known.
     pub fn display(&self, id: u32, raw: i64) -> Option<String> {
         let p = self.params.get(&id)?;
+        Self::display_in(p, raw).or_else(|| Self::display_in(self.generic.get(&id)?, raw))
+    }
+
+    fn display_in(p: &ParamInfo, raw: i64) -> Option<String> {
         if let Some(c) = p.choices.iter().filter(|c| c.raw == raw).min_by_key(|c| c.variant) {
             return Some(c.label.clone());
         }
@@ -305,6 +362,36 @@ mod tests {
         assert_eq!(o.allows(7, 444_725_001), Some(false), "off the 5 Hz step grid");
         assert_eq!(o.allows(4, 1), Some(false));
         assert_eq!(o.allows(999, 1), None);
+    }
+
+    #[test]
+    fn model_ranges_narrow_validation_but_not_display() {
+        let generic = Options::parse(SAMPLE).unwrap();
+        let mut model = ModelOverrides { model_number: "55P10B00-…".into(), ..Default::default() };
+        model.ranges.insert(7, vec!["RAM:[400000000,470000000],UI:[400.000000,470.000000],Step:5".into()]);
+        model.ranges.insert(4, vec!["RAM:2,UI:Low".into()]);
+        model.ranges.insert(999, vec!["RAM:1,UI:Unknown parameter".into()]);
+        model.defaults.insert(7, "429075000".into());
+        model.visible.insert(136, false);
+        let o = generic.with_model(model);
+
+        assert_eq!(o.allows(7, 444_725_000), Some(true));
+        assert_eq!(o.allows(7, 380_000_000), Some(false), "below the U1 band");
+        assert_eq!(o.allows(7, 500_000_000), Some(false), "above the U1 band");
+        assert_eq!(generic.allows(7, 500_000_000), Some(true), "the generic range is wider");
+        assert_eq!(o.parse_display(7, "480 MHz"), None);
+        assert_eq!(o.parse_display(7, "444.725"), Some(444_725_000));
+        assert_eq!(o.describe_allowed(7), "400..470 MHz");
+        assert_eq!(o.allows(4, 0), Some(false), "High is not offered for this model");
+        assert_eq!(o.display(4, 0).as_deref(), Some("High"), "still shown with CPS's label");
+        assert_eq!(o.label_for_edit(4, 0), None, "but not offered as an edit label");
+        assert_eq!(o.display(7, 500_000_000).as_deref(), Some("500 MHz"));
+        assert_eq!(o.allows(6064, 80), Some(true), "parameters without a model range are unchanged");
+        assert_eq!(o.param(999).map(|p| p.name.as_str()), None, "unknown parameters are not invented");
+        assert_eq!(o.model_default(7), Some("429075000"));
+        assert_eq!(o.model_visible(136), Some(false));
+        assert_eq!(generic.model(), None);
+        assert!(o.model().is_some());
     }
 
     #[test]
