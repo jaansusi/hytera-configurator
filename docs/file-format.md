@@ -248,14 +248,61 @@ unknown): scan list members (`Channel List` + type; 65535 = "Selected"), roam li
 number would change or disappear, or when presets are set. Removing other kinds of records (contacts, zones, …) is
 not supported yet.
 
-**References to other lists (inferred 2026-11-19, not yet confirmed on CPS's screens; open question 5b):** the
-RCDB ranges of list references run from 0 to the list's capacity (digital `RX Group List` 0–32 with 32 RX group
-lists, `Scan List Roam List` 0–64 with 64 scan lists, analog `Scan List` 0 = None, 1–64), so they are read as
-1-based positions in the named list (`QEU_C_RxGrpAlias`, `QEU_C_ScanConfig`, `QEU_C_RoamConfig`,
-`QEU_C_AEmergency`) with 0 = None. The BP515's digital channels have `RX Group List` 1 with one RX group list
-(`Rx Group List 1`), consistent with this. A digital channel's `Scan List Roam List` points into the scan or the
-roam lists according to its `Use Scan or Roam List` (0 None, 1 scan, 2 roam). `TX Contacts ID` is a call ID; the
-GUI names it after the contact with that call ID (both channels hold 10, which no contact has).
+**References to other records (observed 2026-11-20 in CPS's own configuration; `hytera-codeplug/src/validation.rs`,
+`hyt-core/src/refs.rs`):** CPS states which fields refer to other records in `DataValidationConfig.config`
+(`<ParamDependencyItems>`, `<DialRuleItems>`) and names list members through virtual parameters in
+`ComplexRuleConfig.Config` (e.g. `-7` = scan member: `IndexParamId` 1182 `Channel List` + `TypeParamId` 1183
+`Channel Type`, type 0 → digital channel alias, 1 → analog). `hyt` loads both from the CPS install (or the
+`hyt rcdb import` copy) at run time. Parameter ids there are layout ids. For the BP515's files:
+
+| Field (file/block) | Points to | Value | Special values |
+|---|---|---|---|
+| Digital channel `RX Group List` (3/1) | RX group lists (80, names in 81) | 1-based list position | 0 = None |
+| Digital channel `Emergency System` (3/1) | digital emergency systems (95/636, `Emergency System Alias`) | 1-based | 0 = None |
+| Digital channel `Phone System` (3/1) | phone systems (213/824, `Phone System Alias`) | 1-based | 0 = None |
+| Digital channel `RRS Channel`, `Location Info Revert Channel` (3/1) | digital channels with `Quick GPS` off | 1-based channel number | 0 = Selected channel, 65535 = None |
+| Analog channel `Scan List` (9/4) | scan lists (84, names in 85) | 1-based | 0 = None |
+| Analog channel `Emergency System` (9/4) | analog emergency systems (96/637) | 1-based | 0 = None |
+| Digital / analog emergency `Revert Channel` (95/636, 96/637) | digital / analog channels | 1-based | 0 = Selected channel |
+| Scan list `Priority Channel 1/2` (85/620; CPS names block 619) | members of the same scan list | 1-based member position | 0 = None, 65535 = Selected channel |
+| Digital channel `TX Contacts ID` (3/1) | contacts, by call ID (dial rule; call type from `Call Type`) | call ID | – |
+| Digital emergency `Group Call ID` (95/636) | contacts, by call ID (dial rule; call type Group) | call ID | – |
+
+This confirms the encoding `hyt` had inferred (1-based, 0 = None) and adds the rest. The source-record filter
+(`FilterType="InCollection"`, keys such as `Close`/`Off` = 0, `OPEN` = 1, `GroupCall` = 1; key meaning inferred)
+limits what is offered, not how values are named. Not in CPS's configuration, still *inferred*: a digital
+channel's `Scan List Roam List` points into the scan or the roam lists according to its `Use Scan or Roam List`
+(0 None, 1 scan, 2 roam), 1-based, 0 = None. *Unknown*: what CPS writes into the scan list's `PriCH1/2 ChType`
+when a member is chosen as priority channel, so `hyt` offers only None/Selected there (members are shown by
+name). The config also lists trunking/XPT references (blocks 24, 25, 545, 709, 776, …) that the BP515's files do
+not have. Without the config files `hyt` falls back to its old built-in table (TX contact, RX group list, scan
+list, analog emergency system). Tests: `hyt-core/tests/references.rs`.
+
+**Link rules (observed 2026-11-20; `tools/export-rcdb-links.ps1`, `hytera-codeplug/src/link_rules.rs`,
+`hyt-core/src/link_rules.rs`):** CPS greys out, hides or sets settings depending on other settings with rules in
+its parameter database: `LinkMain` (165 rules for V1.5.24.000; `link_relation_type` Normal 0 / Complex 1 /
+UnionLink 2; `initiative_logic_type` And 0 / Or 1 between controlling parameters), `LinkInitiativeParam`
+(controlling parameter, `condition_logic_type` between its conditions), `LinkInitiativeCondition` (`link_type`
+RangeLink 0 / PointLink 1 / OnOff 2; `condition` a raw value or a `RAM:[a,b],…` range; `condition_self_logic`
+Equal 0 / UnEqual 1 / Greater 2 / EqualOrGreater 3 / Smaller 4 / LessOrEqual 5), `LinkPassivityParam` (dependent
+parameter) and `LinkPassivityResult` (`link_result_type` IsEnable 0 / IsVisible 1 / RangeValue 2 / PointValue 3;
+`result` `true`/`false` or a raw value). The enum names are in CPS's readable `G2CPS.DBService.dll`
+(`DBService.Common.EnumsDefine`). Parameters are `Param.param_id`; the export maps them to layout ids.
+`LinkModelNumber` and `LinkRecord` are empty. Values are raw (RAM) values (e.g. rule 290: `Quick GPS` on →
+`RRS Channel` / `Location Info Revert Channel` = 65535 = None and greyed out). Examples: rule 459 (digital
+`RX Only` on → TX settings greyed out), rule 1 (`TX Admit` Always or `RX Only` on → `Private Call Confirmed` = 0
+and greyed), rules 387–449 (equalizer mode → gain fields hidden/greyed), rules 37/39 (emergency type Disable →
+the system's other settings greyed). Rules often come in pairs ("off → greyed", "on → enabled") and overlap
+(rule 460 `RX Only` off → TX tone value greyed; rule 122 TX tone type set and `RX Only` off → enabled).
+
+`hyt` applies the 162 "Normal" rules (160 resolve on the BP515's files): a field is shown disabled with the reason
+when a rule that holds greys it out or hides it; among holding rules the most specific (most controlling
+parameters) decide and greying out wins ties (*inferred*: CPS applies rules as fields change and its order is not
+stored). `Workspace::set_value` refuses such fields and, when a controlling field changes, sets the values CPS
+forces (PointValue) in the same record or a single-record block, if the catalogue allows them. *Not supported*:
+the 3 complex rules (zone/scan/roam members follow channel renames), RangeValue results (none in V1.5.24.000),
+rules whose controlling field is in a different list than the dependent field, forced values into other lists
+(e.g. digital `Encrypt` off → each channel's encryption settings), and IsVisible as hiding (shown greyed instead).
 
 **List pairs and their members (2026-11-20):**
 
@@ -270,9 +317,9 @@ GUI names it after the contact with that call ID (both channels hold 10, which n
 - *Inferred*: an RX group list member's `Call ID` refers to the contact with that call ID (like a digital
   channel's `TX Contacts ID`); the GUI names it only when that is unambiguous (one contact with the ID, or one
   group-call contact among several). Not checked on CPS's screen (this radio's list is empty).
-- *Unknown*: what the scan config's `Designated Channel` (RCDB range 1–1,024 + `DesignatedCH ChType`) and
-  `Priority Channel 1/2` (0 None, 65535 resp. 1 "Selected", 1–31 resp. 1–30 + type fields) count: channel
-  numbers or positions in the scan list. They are shown as numbers. Likewise HDC1200 contacts' `HDC System`,
+- *Unknown*: what the scan config's `Designated Channel` (RCDB range 1–1,024 + `DesignatedCH ChType`) counts
+  (not in CPS's reference configuration; shown as a number). `Priority Channel 1/2` are member positions of the
+  same scan list (observed 2026-11-20 in `DataValidationConfig.config`, see "References" above). Likewise HDC1200 contacts' `HDC System`,
   2-Tone contacts' `TwoTone System` and 2-Tone personalities' `Call List n` (position vs. the systems' own
   `System ID`/`SystemID` fields) are shown as numbers.
 - *Observed* (`ui.json`): CPS shows these lists on Conventional › Basic Setting (One Touch Call, Preset

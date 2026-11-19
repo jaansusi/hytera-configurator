@@ -164,6 +164,13 @@ line for validation errors and progress.
   tables; members of scan/roam/RX group lists are shown read-only by name in the detail panel. Adding/removing
   records or members is not offered (no CPS recording yet). Library: `hyt-core/src/lists.rs`; test
   `tests/list_editors.rs`.
+- **CPS's references and link rules** (built 2026-11-20, offline only): reference fields come from CPS's
+  `DataValidationConfig.config` / `ComplexRuleConfig.Config` at run time (adds phone system, digital emergency
+  system, RRS/location revert channel, emergency revert channels, scan priority channels, emergency group call
+  ID). CPS's link rules (`tools/export-rcdb-links.ps1` → `links.json`) grey out dependent fields in tables, detail
+  and settings (reason as tooltip); `set_value` refuses them and applies values CPS forces. Library:
+  `hytera-codeplug/src/{validation,link_rules}.rs`, `hyt-core/src/{refs,link_rules}.rs`; test
+  `tests/references.rs`. Owner check: compare a few greyed fields with CPS's screens.
 - Later: CPS's page/group structure from `XMLToolCompactData.sdf` for the other settings; `hyt rcdb import`
   for macOS/Linux; installers via `cargo tauri build` in CI.
 

@@ -332,7 +332,7 @@ pub fn table(ws: &Workspace, id: &str) -> Option<Table> {
             let list_members = members_file.map(|(_, name, kind)| members_of(ws, name, kind, record));
             if let Some(ms) = &list_members {
                 let text = ms.iter().map(|m| m.name.clone()).collect::<Vec<_>>().join(", ");
-                cells.push(Cell { text, changed: false, editable: false, field: None, editor: None });
+                cells.push(Cell::computed(text, false));
             }
             Row {
                 no: record + 1,

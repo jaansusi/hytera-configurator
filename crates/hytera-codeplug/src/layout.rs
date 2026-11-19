@@ -163,6 +163,12 @@ impl Layout {
         self.blocks.values().flatten().filter(|f| f.id == id).collect()
     }
 
+    /// The file holding block `block_id` and the block's fields (the first file, should a block
+    /// id appear in several).
+    pub fn block(&self, block_id: u16) -> Option<(u16, &[FieldDef])> {
+        self.blocks.iter().find(|((_, b), _)| *b == block_id).map(|(&(f, _), defs)| (f, defs.as_slice()))
+    }
+
     pub fn block_ids(&self, file_id: u16) -> Vec<u16> {
         self.blocks.keys().filter(|(f, _)| *f == file_id).map(|&(_, b)| b).collect()
     }

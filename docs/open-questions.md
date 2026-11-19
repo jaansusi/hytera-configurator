@@ -10,7 +10,7 @@ answer into the right doc and note it under "Resolved" with the date and the evi
 | 3 | **Removing other records and references**: how CPS updates scan/roam lists, scan priority/designated channels, emergency revert channels, power-on/stun channel and presets when a channel is deleted; and what deleting a contact, zone or scan list changes | Deleting channels used in those places; deleting contacts, zones, … | Record CPS deleting a channel used in a scan list (and as designated channel), and deleting a contact; diff |
 | 4 | Why the radio's read CRC for 5, 18, 46 matches no rule (structure itself is decoded) | Low (CPS-style writes recompute it) | Compare more reads |
 | 5 | Which `different_version` variant applies to the BP515 (only matters for a few rare options) | Low | Compare with CPS screens where variants differ |
-| 5b | **Confirm the reference mapping the GUI uses** (inferred 2026-11-19 from RCDB ranges, `hyt-core/src/refs.rs`): RX group list, scan list, roam list, analog emergency system = 1-based position in the named list, 0 = None; digital `Scan List Roam List` follows `Use Scan or Roam List`; `TX Contacts ID` = contact with that call ID (channels hold 10, no contact has it: shown as `10`). Other references (phone system, personality list, encryption keys, emergency on digital) still show catalogue text or numbers | Correct names in the GUI | CPS's channel screen: RX group list / TX contact columns for the BP515's channels; a second RX group list or scan list to tell 0- from 1-based |
+| 5b | **References not covered by CPS's configuration** (the rest was answered 2026-11-20, see Resolved): digital `Scan List Roam List` (inferred: follows `Use Scan or Roam List`, 1-based); scan list `Designated Channel` (+ `DesignatedCH ChType`); what CPS writes into `PriCH1/2 ChType` when a scan member is chosen as priority channel (`hyt` offers only None/Selected there) | Choosing these by name | Recording of CPS writing a scan list with a priority channel set; CPS's scan list screen |
 | 5d | **Model-number rules** ([file-format.md §2b](file-format.md#2b-model-number-rules-ranges-defaults-visibility-by-model)): confirm on CPS's screens that the BP515 U1 refuses channel frequencies outside 400–470 MHz (and accepts 400.000 / 470.000) and that In Call TX Admit offers no "Always Allow"; which group wins when several match; what the `ModelNumberUILink` link types mean (screen parts per model) | Low (`hyt` already applies the ranges; a wrong rule would refuse or allow too much) | In CPS: type 399.995 and 470.005 MHz into a channel's RX frequency; open In Call TX Admit's list |
 | 5c | How CPS handles removing a channel that is the radio's **current channel** (`QEU_C_Config` `Current CH Address`, = 1 on the BP515) or other references | Removing channel 1 of either list (refused by `hyt`/GUI) | Part of question 3's recordings |
 | 6 | Header fields 4..7 (version/count) and 16..19 of the file container | Writing new files | Compare across files and recordings |
@@ -22,6 +22,14 @@ answer into the right doc and note it under "Resolved" with the date and the evi
 | 13 | **Does CPS open a `.tpl` written by `hyt tpl export`** (import into its library, open it)? Does it need `Seqo`, a filled `Comm_RadioInfo` (253, `isReadTemplate` = 1) or a `TemplatesXML.xml` entry? Which data fill 253's `Radio ID`, licence flags and `N/A` fields? ([file-format.md §6](file-format.md#6-cps-template-files-tpl)) | Handing `hyt` configurations to CPS | Owner: import an exported file in CPS (no radio needed) and look at its Radio Information page; also try an export made without any `Seqo` |
 
 ## Resolved
+
+- 2026-11-20: **Reference fields and their encoding (most of 5b)**: CPS's `DataValidationConfig.config` and
+  `ComplexRuleConfig.Config` state them: RX group list, scan list, emergency systems, phone system = 1-based
+  position, 0 = None; RRS / location revert channel = 1-based digital channel, 0 = Selected, 65535 = None;
+  emergency revert channels 0 = Selected; scan priority channels = member positions of the same list,
+  0 = None, 65535 = Selected; TX contact and digital emergency group call ID = call IDs (dial rules). `hyt` now
+  loads these at run time ([file-format.md](file-format.md), "References"). (Observed in CPS's files; not yet
+  seen on CPS's screens.)
 
 - 2026-11-19: **How CPS picks model-specific ranges**: by the model number (info item 0x0000; 1-based positions
   without the `-`), conditions in `ModelNumberMainGroup`, overrides in `ModelNumberRange/Default/VisibleGroupLink`.

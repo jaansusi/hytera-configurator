@@ -2,6 +2,7 @@
 //! transport: read, save/load folders, decode, edit, write.
 
 pub mod edit;
+pub mod link_rules;
 pub mod lists;
 pub mod refs;
 pub mod settings;

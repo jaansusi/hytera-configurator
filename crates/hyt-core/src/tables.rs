@@ -54,6 +54,10 @@ pub struct Cell {
     /// the record).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub editor: Option<Editor>,
+    /// Why CPS greys this field out (or hides it) now, from its link rules; such cells are not
+    /// editable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<String>,
 }
 
 /// One record: where it is, for the detail view.
@@ -281,17 +285,27 @@ pub(crate) fn column(ws: &Workspace, file: u16, block: u16, key: &str, title: &s
 pub(crate) fn cell(ws: &Workspace, at: FieldRef, strip_unit: bool) -> Cell {
     let def = ws.def(&at);
     let Some(value) = value_at(ws.view(), &at) else {
-        return Cell { text: String::new(), changed: false, editable: false, field: None, editor: None };
+        return Cell::computed(String::new(), false);
     };
-    let refs = ws.reference_choices(&at);
-    let text = match (&refs, value.as_i64()) {
-        (Some(choices), Some(raw)) => crate::refs::label(choices, raw).unwrap_or_else(|| raw.to_string()),
+    let names = ws.reference_names(&at);
+    let text = match (&names, value.as_i64()) {
+        (Some(names), Some(raw)) => crate::refs::label(names, raw).unwrap_or_else(|| raw.to_string()),
         _ => display(ws.options.as_ref(), def, &at.key, value, strip_unit),
     };
     let changed = ws.original_value(&at) != Some(value);
-    let editable = def.is_some_and(|d| is_editable(d, &at.key, value));
-    let editor = refs.map(|choices| Editor::Choice { options: choices.into_iter().map(|(_, l)| l).collect() });
-    Cell { text, changed, editable, field: Some(at), editor }
+    let disabled = ws.restriction(&at).map(|r| r.reason);
+    let editable = disabled.is_none() && def.is_some_and(|d| is_editable(d, &at.key, value));
+    let editor = names
+        .and(ws.reference_choices(&at))
+        .map(|choices| Editor::Choice { options: choices.into_iter().map(|(_, l)| l).collect() });
+    Cell { text, changed, editable, field: Some(at), editor, disabled }
+}
+
+impl Cell {
+    /// A cell computed from several fields (e.g. a zone's channels), not editable.
+    pub fn computed(text: String, changed: bool) -> Self {
+        Cell { text, changed, editable: false, field: None, editor: None, disabled: None }
+    }
 }
 
 fn record_table(ws: &Workspace, spec: &TableSpec) -> Option<Table> {
@@ -396,7 +410,7 @@ fn zones_table(ws: &Workspace) -> Option<Table> {
             };
             names(ws.base(), &b) != names(ws.view(), &ws.zone_members(row.no - 1))
         });
-        row.cells.push(Cell { text, changed, editable: false, field: None, editor: None });
+        row.cells.push(Cell::computed(text, changed));
         row.members = Some(list);
     }
     Some(table)
@@ -553,7 +567,7 @@ pub fn change_list(ws: &Workspace) -> Vec<ChangeView> {
                     (label(ws.base(), base_record), label(ws.view(), a.map(|a| a.record)))
                 }
                 _ => {
-                    let refs = at.as_ref().and_then(|a| ws.reference_choices(a));
+                    let refs = at.as_ref().and_then(|a| ws.reference_names(a));
                     let text = |v: &Value, refs: Option<&Vec<(i64, String)>>| match (refs, v.as_i64()) {
                         (Some(r), Some(raw)) => crate::refs::label(r, raw).unwrap_or_else(|| raw.to_string()),
                         _ => display(options, def, &c.key, v, false),

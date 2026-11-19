@@ -296,8 +296,10 @@ function renderRow(t, row, i) {
   }, h('td', { class: 'no' }, row.no));
   row.cells.forEach((cell, j) => {
     const col = cell.editor ? { ...t.columns[j], editor: cell.editor } : t.columns[j];
-    const classes = [cell.changed ? 'changed' : '', cell.editable ? 'editable' : '', col.key === 'members' ? 'members' : ''];
-    const td = h('td', { class: classes.join(' ').trim(), title: cell.editable ? 'Double-click to edit' : null }, cell.text);
+    const classes = [cell.changed ? 'changed' : '', cell.editable ? 'editable' : '', cell.disabled ? 'disabled' : '',
+      col.key === 'members' ? 'members' : ''];
+    const tip = cell.disabled || (cell.editable ? 'Double-click to edit' : null);
+    const td = h('td', { class: classes.join(' ').trim(), title: tip }, cell.text);
     if (cell.editable) td.addEventListener('dblclick', () => startCellEdit(td, col, cell));
     tr.append(td);
   });
@@ -413,8 +415,8 @@ function renderDetail() {
   const grid = h('div', { class: 'fields' });
   for (const field of state.detail) {
     const f = field.cell.editor ? { ...field, column: { ...field.column, editor: field.cell.editor } } : field;
-    const label = h('span', { class: 'label', title: f.column.key }, f.column.title);
-    const value = h('span', { class: `value${f.cell.changed ? ' changed' : ''}` });
+    const label = h('span', { class: `label${f.cell.disabled ? ' disabled' : ''}`, title: f.cell.disabled || f.column.key }, f.column.title);
+    const value = h('span', { class: `value${f.cell.changed ? ' changed' : ''}${f.cell.disabled ? ' disabled' : ''}` });
     if (f.cell.editable && f.column.editor.kind !== 'read_only') {
       let sending = false;
       const { wrap, control } = makeEditor(f.column, f.cell, async (text) => {
@@ -432,7 +434,7 @@ function renderDetail() {
       });
       value.append(...(wrap === control ? [control] : wrap.childNodes));
     } else {
-      value.append(h('span', { class: 'ro', title: f.cell.text }, f.cell.text));
+      value.append(h('span', { class: 'ro', title: f.cell.disabled || f.cell.text }, f.cell.text));
       if (f.column.unit) value.append(h('span', { class: 'unit' }, f.column.unit));
     }
     grid.append(label, value);
@@ -488,8 +490,8 @@ function renderSettings(c) {
 function renderSettingRows(settings) {
   const grid = h('div', { class: 'fields' });
   for (const s of settings) {
-    const label = h('span', { class: 'label', title: s.column.key }, s.label);
-    const value = h('span', { class: `value${s.cell.changed ? ' changed' : ''}` });
+    const label = h('span', { class: `label${s.cell.disabled ? ' disabled' : ''}`, title: s.cell.disabled || s.column.key }, s.label);
+    const value = h('span', { class: `value${s.cell.changed ? ' changed' : ''}${s.cell.disabled ? ' disabled' : ''}` });
     if (s.cell.editable && s.column.editor.kind !== 'read_only') {
       let sending = false;
       const { wrap, control } = makeEditor(s.column, s.cell, async (text) => {
@@ -507,7 +509,7 @@ function renderSettingRows(settings) {
       });
       value.append(...(wrap === control ? [control] : [...wrap.childNodes]));
     } else {
-      value.append(h('span', { class: 'ro', title: s.read_only || s.cell.text }, s.cell.text));
+      value.append(h('span', { class: 'ro', title: s.read_only || s.cell.disabled || s.cell.text }, s.cell.text));
       if (s.column.unit) value.append(h('span', { class: 'unit' }, s.column.unit));
     }
     grid.append(label, value);

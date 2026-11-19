@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use hytera_codeplug::decode::{DecodedBlock, DecodedFile, Fields, Record, decode};
 use hytera_codeplug::layout::{FieldDef, FieldType, Layout};
+use hytera_codeplug::link_rules::LinkRules;
 use hytera_codeplug::options::Options;
 use hytera_codeplug::rcdb::{RcdbRoot, TableLink};
 use serde::{Deserialize, Serialize};
@@ -189,6 +190,14 @@ pub struct Workspace {
     pub model_note: Option<String>,
     /// CPS's screen structure (`ui.json` next to the option catalogue), for the settings view.
     pub ui: Option<hytera_codeplug::ui::UiTree>,
+    /// Fields that refer to other records (from CPS's `DataValidationConfig.config`).
+    pub refs: crate::refs::References,
+    /// Why references use hyt's built-in table instead of CPS's configuration, when they do.
+    pub refs_note: Option<String>,
+    /// CPS's link rules for this configuration (`links.json` next to the option catalogue).
+    pub rules: crate::link_rules::Links,
+    /// Why no link rules are applied, when they are not.
+    pub rules_note: Option<String>,
     links: Vec<TableLink>,
     base: Vec<DecodedFile>,
     working: Vec<DecodedFile>,
@@ -215,6 +224,21 @@ impl Workspace {
             None => hytera_codeplug::ui::UiTree::default_path(&version),
         };
         let ui = ui_path.and_then(|p| hytera_codeplug::ui::UiTree::load(&p).ok()).filter(|u| u.rcdb_version == version);
+        let (config, refs_note) = match rcdb.validation_config() {
+            Ok(c) => (Some(c), None),
+            Err(e) => (None, Some(format!("CPS's reference configuration not found ({e}); using hyt's built-in references"))),
+        };
+        let refs = crate::refs::References::new(config.as_ref(), &layout, &links, &base);
+        let rules_path = match options_path {
+            Some(p) => Some(p.with_file_name("links.json")),
+            None => LinkRules::default_path(&version),
+        };
+        let (rules, rules_note) = match rules_path.map(|p| LinkRules::load(&p)) {
+            Some(Ok(r)) if r.rcdb_version == version => (crate::link_rules::Links::new(&r, &layout, &base), None),
+            Some(Ok(r)) => (Default::default(), Some(format!("link rules are for RCDB {}, not {version}", r.rcdb_version))),
+            Some(Err(e)) => (Default::default(), Some(format!("no link rules ({e}); run tools/export-rcdb-links.ps1"))),
+            None => (Default::default(), Some("no per-user data folder for the link rules".into())),
+        };
         Ok(Workspace {
             folder: folder.to_path_buf(),
             saved,
@@ -223,6 +247,10 @@ impl Workspace {
             options_note,
             model_note,
             ui,
+            refs,
+            refs_note,
+            rules,
+            rules_note,
             links,
             working: base.clone(),
             view: base.clone(),
@@ -272,10 +300,6 @@ impl Workspace {
         def_for(&self.layout, at.file, at.block, &at.key)
     }
 
-    fn file_name(&self, id: u16) -> Option<&str> {
-        self.base.iter().find(|f| f.id == id).map(|f| f.name.as_str())
-    }
-
     /// The index in the opened folder of the record at view position `record`, or `None` for a
     /// record added since.
     pub fn original_index(&self, file: u16, block: u16, record: usize) -> Option<usize> {
@@ -290,11 +314,23 @@ impl Workspace {
         value_at(&self.base, &FieldRef { record: index, ..at.clone() })
     }
 
-    /// Reference choices for the field at `at`, if it refers to another list.
+    /// Reference choices for the field at `at` (what can be chosen), if it refers to other records.
     pub fn reference_choices(&self, at: &FieldRef) -> Option<Vec<(i64, String)>> {
-        let file = self.file_name(at.file)?;
         let record = fields_at(&self.view, &FieldRef { member: None, ..at.clone() })?;
-        crate::refs::choices(&self.view, file, &at.key, record)
+        self.refs.choices(&self.view, at, record)
+    }
+
+    /// Names of every value the reference field at `at` can name (for showing its value).
+    pub fn reference_names(&self, at: &FieldRef) -> Option<Vec<(i64, String)>> {
+        let record = fields_at(&self.view, &FieldRef { member: None, ..at.clone() })?;
+        self.refs.names(&self.view, at, record)
+    }
+
+    /// Why CPS would not let the field at `at` be changed now (a link rule greys it out or
+    /// hides it), if so.
+    pub fn restriction(&self, at: &FieldRef) -> Option<crate::link_rules::Restriction> {
+        let name = |f: &FieldRef, raw: i64| crate::refs::label(&self.reference_names(f)?, raw);
+        self.rules.restriction(&self.view, self.options.as_ref(), &name, at)
     }
 
     /// Set the field at `at` (a view position, not a zone member) from user input: display text
@@ -309,11 +345,42 @@ impl Workspace {
         if !is_editable(def, &at.key, current) {
             bail!("{} cannot be edited here", at.key);
         }
-        let value = match self.reference_choices(at).and_then(|c| crate::refs::parse(&c, text)) {
-            Some(raw) => Value::from(raw),
-            None => parse_input(def, &at.key, self.options.as_ref(), text)?,
+        if let Some(r) = self.restriction(at) {
+            bail!("{} cannot be changed: {}", at.key, r.reason);
+        }
+        let value = match (self.reference_choices(at), self.reference_names(at)) {
+            (Some(choices), Some(names)) => match crate::refs::parse(&choices, text) {
+                Some(raw) => Value::from(raw),
+                None if crate::refs::parse(&names, text).is_some() => {
+                    bail!("{}: {:?} cannot be chosen: {}", at.key, text.trim(), self.refs.why_not(at))
+                }
+                None => parse_input(def, &at.key, self.options.as_ref(), text)?,
+            },
+            _ => parse_input(def, &at.key, self.options.as_ref(), text)?,
         };
-        self.set_raw(at, value)
+        // Values CPS sets along with this one (link rules), where the catalogue allows them.
+        let forced: Vec<(FieldRef, Value)> = match value.as_i64() {
+            Some(raw) if value_at(&self.working, at) != Some(&value) => self
+                .rules
+                .forced(&self.working, at, raw)
+                .into_iter()
+                .filter(|(f, v)| {
+                    let Some(d) = self.def(f).filter(|_| f != at) else { return false };
+                    let current = value_at(&self.working, f);
+                    current.is_some_and(|c| is_editable(d, &f.key, c) && c.as_i64() != Some(*v))
+                        && self.options.as_ref().and_then(|o| o.allows(d.id, *v)) != Some(false)
+                })
+                .map(|(f, v)| (f, Value::from(v)))
+                .collect(),
+            _ => Vec::new(),
+        };
+        self.update(|w| {
+            for (f, v) in std::iter::once((at, &value)).chain(forced.iter().map(|(f, v)| (f, v))) {
+                let map = fields_at_mut(w, f).ok_or_else(|| anyhow!("no record at that position"))?;
+                map.insert(f.key.clone(), v.clone());
+            }
+            Ok(())
+        })
     }
 
     /// Undo the pending change of one field of a record that exists in the opened folder.

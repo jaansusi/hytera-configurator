@@ -12,6 +12,10 @@ pub const DEFAULT_CPS_DATA_DIR: &str =
 /// The folders of a CPS install that hyt reads (file lists, layouts, linked lists).
 pub const RCDB_FOLDERS: [&str; 3] = ["RcdbJsons", "RcdbXmls", "RCDB"];
 
+/// CPS configuration files in the install's root that hyt reads (references, see
+/// [`crate::validation`]); copied by [`import`] when present.
+pub const RCDB_FILES: [&str; 2] = [crate::validation::VALIDATION_FILE, crate::validation::COMPLEX_RULE_FILE];
+
 /// The per-user copy of CPS's RCDB data made by [`import`] (`<data dir>/cps`).
 pub fn user_copy_dir() -> Option<PathBuf> {
     Some(crate::options::data_dir()?.join("cps"))
@@ -47,7 +51,7 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
     Ok(n)
 }
 
-/// Copy the RCDB folders hyt needs ([`RCDB_FOLDERS`]) from `src` (a CPS install or a copy of one)
+/// Copy the RCDB folders and files hyt needs ([`RCDB_FOLDERS`], [`RCDB_FILES`]) from `src` (a CPS install or a copy of one)
 /// to `dst`. Returns the number of files copied. Hytera data: keep it out of shared folders.
 pub fn import(src: &Path, dst: &Path) -> Result<usize> {
     if !src.join("RcdbJsons").is_dir() {
@@ -57,6 +61,13 @@ pub fn import(src: &Path, dst: &Path) -> Result<usize> {
     for folder in RCDB_FOLDERS {
         if src.join(folder).is_dir() {
             n += copy_tree(&src.join(folder), &dst.join(folder))?;
+        }
+    }
+    for file in RCDB_FILES {
+        let from = src.join(file);
+        if from.is_file() {
+            std::fs::copy(&from, dst.join(file)).map_err(|source| Error::Io { path: from.clone(), source })?;
+            n += 1;
         }
     }
     Ok(n)
@@ -210,8 +221,12 @@ mod import_tests {
             std::fs::create_dir_all(src.join(dir)).unwrap();
             std::fs::write(src.join(dir).join(file), b"x").unwrap();
         }
+        std::fs::write(src.join("DataValidationConfig.config"), b"x").unwrap();
+        std::fs::write(src.join("G2CPS.Main.exe.Config"), b"x").unwrap();
         let dst = base.join("copy");
-        assert_eq!(import(&src, &dst).unwrap(), 3);
+        assert_eq!(import(&src, &dst).unwrap(), 4);
+        assert!(dst.join("DataValidationConfig.config").is_file());
+        assert!(!dst.join("G2CPS.Main.exe.Config").exists());
         assert!(dst.join("RCDB/TableLink/TableLink.xml").is_file());
         assert!(!dst.join("Other").exists(), "only the RCDB folders are copied");
         assert_eq!(versions(&dst), ["V1"]);
