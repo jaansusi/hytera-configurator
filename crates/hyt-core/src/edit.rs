@@ -480,6 +480,24 @@ fn check_consistency(saved: &SavedRead, files: &BTreeMap<u16, Vec<u8>>, layout: 
             );
         }
     }
+    // CPS requires contacts to be unique by (Call ID, Call Type) (observed in its validation config,
+    // docs/cps-features.md). Only a change can introduce a duplicate, so check whenever the file
+    // differs from the read.
+    if let Some(id) = file_id(saved, "QEU_C_DContact")
+        && let Some(bytes) = files.get(&id)
+        && saved.files.get(&id) != Some(bytes)
+    {
+        let contacts = decode(bytes, "QEU_C_DContact", layout)?;
+        let mut seen: BTreeMap<(i64, i64), usize> = BTreeMap::new();
+        for (i, r) in contacts.blocks.iter().flat_map(|b| &b.records).enumerate() {
+            let Some(f) = &r.fields else { continue };
+            let get = |k: &str| f.0.get(k).and_then(Value::as_i64);
+            let (Some(call_id), Some(kind)) = (get("Call ID"), get("Call Type")) else { continue };
+            if let Some(first) = seen.insert((call_id, kind), i + 1) {
+                bail!("contacts {first} and {} have the same call ID {call_id} and call type; CPS does not allow that", i + 1);
+            }
+        }
+    }
     let count_of = |name: &str| file_id(saved, name).and_then(|id| files.get(&id)).and_then(|b| record_count(b));
     let (Some(zone_id), Some(digital), Some(analog)) =
         (file_id(saved, "QEU_C_Zone"), count_of("QEU_C_DChannel"), count_of("QEU_C_AChannel"))

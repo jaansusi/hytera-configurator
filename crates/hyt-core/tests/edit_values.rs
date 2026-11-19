@@ -134,3 +134,21 @@ fn invalid_values_are_refused() {
         assert!(format!("{err:#}").contains(expect), "{key} = {value}: {err:#}");
     }
 }
+
+#[test]
+fn duplicate_contacts_are_refused_like_cps() {
+    let Some(fx) = fixture() else { return };
+    let links = fx.rcdb.table_links().unwrap();
+    let with_extra = |call_id: i64| {
+        let mut contacts: Vec<DecodedFile> = decode_read(&fx.saved, &fx.layout).unwrap().into_iter().filter(|f| f.name == "QEU_C_DContact").collect();
+        let first = contacts[0].blocks[0].records[0].fields.clone().unwrap();
+        let mut f = first.0.clone();
+        f.insert("Call Alias".into(), json!("Twin"));
+        f.insert("Call ID".into(), json!(call_id));
+        contacts[0].blocks[0].records.push(hytera_codeplug::decode::Record { index: None, fields: Some(hytera_codeplug::decode::Fields(f)), members: None });
+        apply_edits(&fx.saved, &fx.layout, Some(&fx.options), &links, contacts)
+    };
+    let err = with_extra(1).unwrap_err();
+    assert!(format!("{err:#}").contains("same call ID 1"), "{err:#}");
+    assert!(with_extra(2).is_ok());
+}
