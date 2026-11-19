@@ -7,7 +7,9 @@
 //! Records missing from the file are kept (import never removes). Each refused cell is reported;
 //! accepted cells stay applied.
 
-use anyhow::{Context, Result, bail};
+use std::path::Path;
+
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 
 use crate::tables::{Table, record_detail, table};
@@ -129,7 +131,12 @@ pub fn import(ws: &mut Workspace, id: &str, text: &str) -> Result<ImportReport> 
             let Some(at) = &field.cell.field else { continue };
             match ws.set_value(at, value) {
                 Ok(()) => report.changed += 1,
-                Err(e) => report.errors.push(format!("{row_label}, {key}: {e:#}")),
+                Err(e) => {
+                    // The workspace's message usually starts with the field name already.
+                    let msg = format!("{e:#}");
+                    let msg = msg.strip_prefix(&format!("{key}: ")).unwrap_or(&msg);
+                    report.errors.push(format!("{row_label}, {key}: {msg}"));
+                }
             }
         }
     }
@@ -142,9 +149,60 @@ pub fn import(ws: &mut Workspace, id: &str, text: &str) -> Result<ImportReport> 
     Ok(report)
 }
 
+/// Write table `id` as CSV to `path` (replacing it; a save dialog has asked). Returns the number
+/// of records written.
+pub fn export_to_file(ws: &Workspace, id: &str, path: &Path) -> Result<usize> {
+    let text = export(ws, id)?;
+    std::fs::write(path, &text).with_context(|| format!("writing {}", path.display()))?;
+    Ok(table(ws, id).map_or(0, |t| t.rows.len()))
+}
+
+/// [`import`] the CSV file at `path` into table `id`.
+pub fn import_file(ws: &mut Workspace, id: &str, path: &Path) -> Result<ImportReport> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_| anyhow!("{} is not UTF-8 text; save it from the spreadsheet as \"CSV UTF-8\"", path.display()))?;
+    import(ws, id, &text)
+}
+
+/// A file name for table `id` of the open folder: `<folder name>-<table>.csv` (lists by title).
+pub fn suggested_file_name(ws: &Workspace, id: &str) -> String {
+    let folder = ws.folder.file_name().map_or_else(|| "hyt".to_string(), |n| n.to_string_lossy().into_owned());
+    let table_name = match id.strip_prefix(crate::lists::ID_PREFIX) {
+        Some(file) => table(ws, id).map_or_else(|| file.to_string(), |t| t.title.to_lowercase()),
+        None => id.to_string(),
+    };
+    format!("{}-{}.csv", file_safe(&folder), file_safe(&table_name))
+}
+
+/// `name` with characters that are not allowed in file names (or awkward in them) replaced by `-`.
+fn file_safe(name: &str) -> String {
+    let s: String = name
+        .trim()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '-' })
+        .collect();
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if !(c == '-' && out.ends_with('-')) {
+            out.push(c);
+        }
+    }
+    let out = out.trim_matches(|c| c == '-' || c == '.').to_string();
+    if out.is_empty() { "table".into() } else { out }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_names_are_safe() {
+        assert_eq!(file_safe("Scan Lists"), "Scan-Lists");
+        assert_eq!(file_safe("read_2026-11-19"), "read_2026-11-19");
+        assert_eq!(file_safe("a: b/c"), "a-b-c");
+        assert_eq!(file_safe(" ..? "), "table");
+    }
 
     #[test]
     fn headers_carry_units() {

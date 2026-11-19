@@ -244,3 +244,43 @@ fn missing_files_are_kept_from_the_reference() {
     assert_eq!(saved.files[&8], fx.like.files[&8]);
     std::fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+fn workspace_export_includes_unsaved_edits_and_imports_back() {
+    let Some(fx) = fixture() else { return };
+    let cps = std::env::var_os("HYT_RCDB").map(PathBuf::from).unwrap_or(DEFAULT_CPS_DATA_DIR.into());
+    let rcdb = RcdbRoot::new(cps);
+    let mut ws = hyt_core::workspace::Workspace::open(&fx.like_dir, &rcdb, None).unwrap();
+    let t = hyt_core::tables::table(&ws, "digital").unwrap();
+    let alias = t.rows[0].cells[0].field.clone().unwrap();
+    ws.set_value(&alias, "TPL Edit").unwrap();
+    assert!(ws.has_changes());
+    assert_eq!(tpl::suggested_name(&fx.like_dir), "start");
+
+    let out = temp("ws.tpl");
+    let (exported, report) = tpl::export_workspace(&ws, &rcdb, &out, Some("  GUI test ".into())).unwrap();
+    assert_eq!(exported.header.name.as_deref(), Some("GUI test"));
+    assert_eq!(report.files, fx.like.manifest.files.len());
+    // Every file is the workspace's current one, in written form (so the edit is in it).
+    let back = Template::read(&out).unwrap();
+    for f in back.files().unwrap() {
+        assert_eq!(f.bytes, prepare_for_write(&ws.files()[&f.id]).unwrap(), "file {}", f.name);
+    }
+    // The open folder itself is unchanged.
+    assert!(ws.has_changes());
+
+    // Importing it for the same radio gives the edited configuration.
+    let folder = temp("ws-import");
+    let (t, report) = tpl::import_file(&out, &fx.like, &folder).unwrap();
+    assert_eq!(t.header.name.as_deref(), Some("GUI test"));
+    assert_eq!(report.from_template, fx.like.manifest.files.len());
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    let imported = hyt_core::workspace::Workspace::open(&folder, &rcdb, None).unwrap();
+    let t = hyt_core::tables::table(&imported, "digital").unwrap();
+    assert_eq!(t.rows[0].cells[0].text, "TPL Edit");
+    assert_eq!(tpl::suggested_name(&folder), "GUI test");
+    // Exporting to an existing file is refused.
+    assert!(tpl::export_workspace(&ws, &rcdb, &out, None).unwrap_err().to_string().contains("already exists"));
+    std::fs::remove_file(&out).unwrap();
+    std::fs::remove_dir_all(&folder).unwrap();
+}

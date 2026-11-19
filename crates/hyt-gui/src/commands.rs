@@ -133,6 +133,8 @@ pub struct Overview {
     rcdb_version: String,
     /// Why values are shown raw (no option catalogue), if they are.
     options_note: Option<String>,
+    /// Why value ranges are CPS's generic ones (the model number has no rule data), if they are.
+    model_note: Option<String>,
     /// CPS's screen structure (ui.json) is loaded, so the settings view is available.
     has_settings: bool,
     changes: usize,
@@ -151,6 +153,7 @@ fn overview(ws: &Workspace) -> Overview {
         firmware: m.firmware_version.clone(),
         rcdb_version: m.rcdb_version.clone(),
         options_note: ws.options_note.clone(),
+        model_note: ws.model_note.clone(),
         has_settings: ws.ui.is_some(),
         // As listed in the Changes view (a zone member's type and number count once).
         changes: tables::change_list(ws).len(),
@@ -287,7 +290,7 @@ pub fn save_as(state: State<'_, AppState>, path: String) -> CmdResult<Overview> 
     })
 }
 
-/// A new folder name for `kind` (`read`, `backup` or `edited`) next to the open folder, or in
+/// A new folder name for `kind` (`read`, `backup`, `edited` or `template`) next to the open folder, or in
 /// `Documents/hyt` when nothing is open.
 #[tauri::command]
 pub fn suggest_folder(app: AppHandle, state: State<'_, AppState>, kind: String) -> CmdResult<String> {
@@ -301,9 +304,97 @@ pub fn suggest_folder(app: AppHandle, state: State<'_, AppState>, kind: String) 
         "read" => format!("read_{stamp}"),
         "backup" => format!("backup-before-write_{stamp}"),
         "edited" => format!("edited_{stamp}"),
+        "template" => format!("from-template_{stamp}"),
         other => return Err(format!("unknown folder kind {other:?}")),
     };
     Ok(base.join(name).display().to_string())
+}
+
+/// Next to the open folder: `kind` `csv` → `<folder>-<table>.csv` for table `table`, `tpl` →
+/// `<folder>.tpl`.
+#[tauri::command]
+pub fn suggest_file(state: State<'_, AppState>, kind: String, table: Option<String>) -> CmdResult<String> {
+    state.with_ws(|ws| {
+        let dir = ws.folder.parent().map(Path::to_path_buf).unwrap_or_default();
+        let name = match (kind.as_str(), table) {
+            ("csv", Some(id)) => hyt_core::sheet::suggested_file_name(ws, &id),
+            ("tpl", _) => format!("{}.tpl", ws.folder.file_name().map_or_else(|| "hyt".into(), |n| n.to_string_lossy())),
+            _ => anyhow::bail!("unknown file kind {kind:?}"),
+        };
+        Ok(dir.join(name).display().to_string())
+    })
+}
+
+/// Write table `table` as CSV to `path`; returns the number of records.
+#[tauri::command]
+pub fn export_csv(state: State<'_, AppState>, table: String, path: String) -> CmdResult<usize> {
+    state.with_ws(|ws| hyt_core::sheet::export_to_file(ws, &table, Path::new(&path)))
+}
+
+#[derive(Serialize)]
+pub struct CsvImport {
+    overview: Overview,
+    report: hyt_core::sheet::ImportReport,
+}
+
+/// Apply the CSV file `path` to table `table` as pending changes (like typing them).
+#[tauri::command]
+pub fn import_csv(state: State<'_, AppState>, table: String, path: String) -> CmdResult<CsvImport> {
+    state.with_ws(|ws| {
+        let report = hyt_core::sheet::import_file(ws, &table, Path::new(&path))?;
+        Ok(CsvImport { overview: overview(ws), report })
+    })
+}
+
+#[derive(Serialize)]
+pub struct TemplateDefaults {
+    name: String,
+    path: String,
+}
+
+/// Name and file to offer when exporting the open configuration as a CPS template.
+#[tauri::command]
+pub fn template_defaults(state: State<'_, AppState>) -> CmdResult<TemplateDefaults> {
+    let path = suggest_file(state.clone(), "tpl".into(), None)?;
+    state.with_ws(|ws| Ok(TemplateDefaults { name: hyt_core::tpl::suggested_name(&ws.folder), path }))
+}
+
+#[derive(Serialize)]
+pub struct TemplateExport {
+    name: String,
+    report: hyt_core::tpl::ExportReport,
+}
+
+/// Export the configuration as shown (including unsaved changes) as the new CPS template `path`.
+#[tauri::command]
+pub fn export_template(state: State<'_, AppState>, path: String, name: Option<String>) -> CmdResult<TemplateExport> {
+    let rcdb = state.rcdb();
+    state.with_ws(|ws| {
+        let (t, report) = hyt_core::tpl::export_workspace(ws, &rcdb, Path::new(&path), name)?;
+        Ok(TemplateExport { name: t.header.name.unwrap_or_default(), report })
+    })
+}
+
+#[derive(Serialize)]
+pub struct TemplateImport {
+    overview: Overview,
+    name: String,
+    report: hyt_core::tpl::ImportReport,
+}
+
+/// Import the CPS template `path` for the radio of the open folder (as saved, not the pending
+/// changes; the page asks to discard them first) into the new folder `out`, and open that.
+#[tauri::command]
+pub fn import_template(state: State<'_, AppState>, path: String, out: String) -> CmdResult<TemplateImport> {
+    let out = PathBuf::from(out);
+    ensure_new_folder(&out)?;
+    let mut guard = state.ws.lock().map_err(|_| "internal error: state lock poisoned")?;
+    let ws = guard.as_ref().ok_or("open a configuration first (it is the radio the template is imported for)")?;
+    let (t, report) = hyt_core::tpl::import_file(Path::new(&path), &ws.saved, &out).map_err(text)?;
+    let opened = state.open(&out).map_err(text)?;
+    let o = overview(&opened);
+    *guard = Some(opened);
+    Ok(TemplateImport { overview: o, name: t.header.name.unwrap_or_default(), report })
 }
 
 #[derive(Clone, Serialize)]

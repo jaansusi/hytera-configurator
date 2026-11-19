@@ -3,7 +3,9 @@
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
-const { open: pickPath } = window.__TAURI__.dialog;
+// Looked up on each call (not at load) so a scripted test can stand in for the native dialogs.
+const pickPath = (options) => window.__TAURI__.dialog.open(options);
+const pickSavePath = (options) => window.__TAURI__.dialog.save(options);
 
 const state = {
   info: null,      // app_info
@@ -198,6 +200,8 @@ function renderHeader() {
   $('btn-write').disabled = !o || state.busy;
   $('btn-open').disabled = state.busy;
   $('btn-read').disabled = state.busy;
+  $('btn-more').disabled = !o || state.busy;
+  if ($('btn-more').disabled) closeMenu();
 
   const banner = $('banner');
   if (state.info && !state.info.rcdb_found) {
@@ -208,6 +212,10 @@ function renderHeader() {
     banner.hidden = false;
     banner.className = 'banner';
     banner.textContent = `Values are shown as raw numbers: ${o.options_note}`;
+  } else if (o?.model_note) {
+    banner.hidden = false;
+    banner.className = 'banner';
+    banner.textContent = `Model number: ${o.model_note}`;
   } else {
     banner.hidden = true;
   }
@@ -720,6 +728,172 @@ async function onWrite() {
   }
 }
 
+// ---------- "More" menu: CSV and CPS templates ----------
+
+/** The table shown, when the view is one (not settings or changes). */
+function currentTableId() {
+  return state.overview && state.table && state.view !== 'settings' && state.view !== 'changes' ? state.table.id : null;
+}
+
+function openMenu() {
+  const table = currentTableId();
+  for (const id of ['mi-csv-export', 'mi-csv-import']) {
+    $(id).disabled = !table;
+    $(id).title = table ? $(id).dataset.tip || $(id).title : 'Show a table (channels, zones, contacts or a list) first';
+  }
+  $('mi-csv-export').textContent = table ? `Export ${state.table.title} as CSV…` : 'Export table as CSV…';
+  $('mi-csv-import').textContent = table ? `Import ${state.table.title} from CSV…` : 'Import table from CSV…';
+  $('menu-more').hidden = false;
+  $('btn-more').setAttribute('aria-expanded', 'true');
+}
+
+function closeMenu() {
+  $('menu-more').hidden = true;
+  $('btn-more').setAttribute('aria-expanded', 'false');
+}
+
+/** Run a menu entry: close the menu first, report unexpected errors. */
+function menuAction(fn) {
+  return async () => {
+    closeMenu();
+    try {
+      await fn();
+    } catch (e) {
+      setStatus(errorText(e), 'error');
+    }
+  };
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+async function onExportCsv() {
+  const table = currentTableId();
+  if (!table) return;
+  const defaultPath = await invoke('suggest_file', { kind: 'csv', table });
+  const path = await pickSavePath({ title: `Export ${state.table.title} as CSV`, defaultPath, filters: [{ name: 'CSV (spreadsheet)', extensions: ['csv'] }] });
+  if (path) await exportCsvTo(table, path);
+}
+
+async function exportCsvTo(table, path) {
+  try {
+    const n = await invoke('export_csv', { table, path });
+    setStatus(`Exported ${plural(n, 'record')} of ${state.table?.title || table} to ${path}`, 'ok');
+  } catch (e) {
+    setStatus(errorText(e), 'error');
+    await ask('Export failed', [h('pre', {}, errorText(e))], { cancel: false });
+  }
+}
+
+async function onImportCsv() {
+  const table = currentTableId();
+  if (!table) return;
+  const path = await pickPath({ title: `Import ${state.table.title} from CSV`, filters: [{ name: 'CSV (spreadsheet)', extensions: ['csv'] }] });
+  if (path) await importCsvFrom(table, path);
+}
+
+async function importCsvFrom(table, path) {
+  const title = state.table?.title || table;
+  let result;
+  try {
+    result = await invoke('import_csv', { table, path });
+  } catch (e) {
+    // Cells accepted before a failure stay applied: show what is there now.
+    state.overview = (await invoke('get_overview')) || state.overview;
+    await refresh();
+    setStatus(`CSV import failed: ${errorText(e)}`, 'error');
+    await ask('CSV import failed', [h('pre', {}, errorText(e))], { cancel: false });
+    return;
+  }
+  state.overview = result.overview;
+  await refresh();
+  const r = result.report;
+  const done = r.changed || r.added
+    ? `${plural(r.changed, 'value')} changed${r.added ? `, ${plural(r.added, 'record')} added` : ''}`
+    : 'nothing to change (the file matches the table)';
+  setStatus(`Imported ${path} into ${title}: ${done}${r.errors.length ? `; ${r.errors.length} refused` : ''}`, r.errors.length ? 'error' : 'ok');
+  const body = [
+    h('div', { class: 'kv' },
+      h('span', {}, 'File'), h('span', {}, path),
+      h('span', {}, 'Table'), h('span', {}, title),
+      h('span', {}, 'Values changed'), h('span', {}, String(r.changed)),
+      h('span', {}, 'Records added'), h('span', {}, String(r.added)),
+      h('span', {}, 'Refused'), h('span', {}, String(r.errors.length))),
+  ];
+  if (r.errors.length) {
+    body.push(h('p', {}, 'These were not applied (everything else was):'));
+    body.push(h('ul', { class: 'refused' }, r.errors.map((e) => h('li', {}, e))));
+  }
+  if (r.changed || r.added) {
+    body.push(h('p', { class: 'note' }, 'The changes are pending, like typed ones: review them under Changes, then use Save as… or Write to radio….'));
+  }
+  await ask('CSV import', body, { cancel: false });
+}
+
+async function onExportTemplate() {
+  const d = await invoke('template_defaults');
+  $('tpl-export-name').value = d.name;
+  $('tpl-export-path').value = d.path;
+  const n = state.overview.changes;
+  $('tpl-export-changes').hidden = !n;
+  $('tpl-export-changes').textContent = n ? `Includes your ${plural(n, 'unsaved change')}.` : '';
+  if ((await showDialog($('dlg-tpl-export'))) !== 'go') return;
+  await exportTemplateTo($('tpl-export-path').value.trim(), $('tpl-export-name').value.trim());
+}
+
+async function exportTemplateTo(path, name) {
+  try {
+    const r = await invoke('export_template', { path, name: name || null });
+    setStatus(`Exported ${r.report.files} files as CPS template "${r.name}" to ${path}`, 'ok');
+    await ask('Template exported', [
+      h('div', { class: 'kv' },
+        h('span', {}, 'Template name'), h('span', {}, r.name),
+        h('span', {}, 'File'), h('span', {}, path),
+        h('span', {}, 'Radio files'), h('span', {}, String(r.report.files))),
+      ...r.report.warnings.map((w) => h('p', { class: 'note' }, `Note: ${w}`)),
+      h('p', { class: 'note' }, 'In CPS, import it into the template library.'),
+    ], { cancel: false });
+  } catch (e) {
+    setStatus(errorText(e), 'error');
+    await ask('Export failed', [h('pre', {}, errorText(e))], { cancel: false });
+  }
+}
+
+async function onImportTemplate() {
+  if (!(await confirmDiscard())) return;
+  const file = await pickPath({ title: 'CPS template to import', filters: [{ name: 'CPS template', extensions: ['tpl'] }] });
+  if (!file) return;
+  $('tpl-import-file').value = file;
+  $('tpl-import-out').value = await invoke('suggest_folder', { kind: 'template' });
+  if ((await showDialog($('dlg-tpl-import'))) !== 'go') return;
+  await importTemplateFrom($('tpl-import-file').value, $('tpl-import-out').value.trim());
+}
+
+async function importTemplateFrom(file, out) {
+  const reference = state.overview;
+  let r;
+  try {
+    r = await invoke('import_template', { path: file, out });
+  } catch (e) {
+    setStatus(`Template import failed: ${errorText(e)}`, 'error');
+    await ask('Template import failed', [h('pre', {}, errorText(e))], { cancel: false });
+    return;
+  }
+  await opened(r.overview, `Imported CPS template "${r.name}" into ${out}`);
+  const rep = r.report;
+  const names = (list) => list.map(([id, name]) => `${id} ${name}`).join(', ');
+  await ask('Template imported', [
+    h('div', { class: 'kv' },
+      h('span', {}, 'Template'), h('span', {}, `"${r.name}" (${file})`),
+      h('span', {}, 'For radio'), h('span', {}, `${reference.model || '?'} · serial ${reference.serial || '?'} · RCDB ${reference.rcdb_version}`),
+      h('span', {}, 'New folder'), h('span', {}, out),
+      h('span', {}, 'Files from template'), h('span', {}, String(rep.from_template)),
+      ...(rep.kept_from_reference.length ? [h('span', {}, 'Kept from open folder'), h('span', {}, names(rep.kept_from_reference))] : []),
+      ...(rep.ignored.length ? [h('span', {}, 'Ignored (not on this radio)'), h('span', {}, names(rep.ignored))] : [])),
+    ...(rep.warnings.length ? [h('p', {}, 'Warnings:'), h('ul', { class: 'refused' }, rep.warnings.map((w) => h('li', {}, w)))] : []),
+    h('p', { class: 'note' }, 'The new folder is open. Nothing was written to the radio: check the settings, then use Write to radio….'),
+  ], { cancel: false });
+}
+
 // ---------- wiring ----------
 
 async function init() {
@@ -735,6 +909,26 @@ async function init() {
   $('save-browse').addEventListener('click', () => browseNewFolder($('save-out')));
   $('write-save-browse').addEventListener('click', () => browseNewFolder($('write-save')));
   $('write-backup-browse').addEventListener('click', () => browseNewFolder($('write-backup')));
+  for (const id of ['mi-csv-export', 'mi-csv-import']) $(id).dataset.tip = $(id).title;
+  $('btn-more').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if ($('menu-more').hidden) openMenu(); else closeMenu();
+  });
+  document.addEventListener('click', (e) => { if (!$('menu-more').hidden && !$('menu-more').contains(e.target)) closeMenu(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+  $('mi-csv-export').addEventListener('click', menuAction(onExportCsv));
+  $('mi-csv-import').addEventListener('click', menuAction(onImportCsv));
+  $('mi-tpl-export').addEventListener('click', menuAction(onExportTemplate));
+  $('mi-tpl-import').addEventListener('click', menuAction(onImportTemplate));
+  $('tpl-export-browse').addEventListener('click', async () => {
+    const p = await pickSavePath({ title: 'Save the CPS template as', defaultPath: $('tpl-export-path').value, filters: [{ name: 'CPS template', extensions: ['tpl'] }] });
+    if (p) $('tpl-export-path').value = p;
+  });
+  $('tpl-import-browse').addEventListener('click', async () => {
+    const p = await pickPath({ title: 'CPS template to import', filters: [{ name: 'CPS template', extensions: ['tpl'] }] });
+    if (p) $('tpl-import-file').value = p;
+  });
+  $('tpl-import-out-browse').addEventListener('click', () => browseNewFolder($('tpl-import-out')));
   $('write-confirm').addEventListener('change', (e) => { $('write-go').disabled = !e.target.checked; });
   $('read-port').addEventListener('change', () => { $('read-replay-row').hidden = $('read-port').value !== '__replay__'; });
   $('read-replay-browse').addEventListener('click', async () => {

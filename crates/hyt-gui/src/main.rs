@@ -66,6 +66,12 @@ fn main() {
             commands::move_zone_member,
             commands::save_as,
             commands::suggest_folder,
+            commands::suggest_file,
+            commands::export_csv,
+            commands::import_csv,
+            commands::template_defaults,
+            commands::export_template,
+            commands::import_template,
             commands::read_radio,
             commands::write_radio,
         ])

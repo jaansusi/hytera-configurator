@@ -12,6 +12,16 @@
     <div class="brand">hyt</div>
     <button id="btn-open" title="Open a folder saved by hyt read or by this app">Open folder…</button>
     <button id="btn-read" title="Read every setting from the radio into a new folder">Read radio…</button>
+    <div class="menu-wrap">
+      <button id="btn-more" aria-haspopup="menu" aria-expanded="false" disabled title="Spreadsheet (CSV) and CPS template import/export">More ▾</button>
+      <div id="menu-more" class="menu" role="menu" hidden>
+        <button role="menuitem" id="mi-csv-export" title="Save every field of every record of the table shown as a CSV file for a spreadsheet">Export table as CSV…</button>
+        <button role="menuitem" id="mi-csv-import" title="Apply an edited CSV file to the table shown, as unsaved changes">Import table from CSV…</button>
+        <hr>
+        <button role="menuitem" id="mi-tpl-export" title="Save the configuration as shown (including unsaved changes) as a template file CPS can open">Export CPS template…</button>
+        <button role="menuitem" id="mi-tpl-import" title="Turn a CPS template into a new folder for this radio and open it">Import CPS template…</button>
+      </div>
+    </div>
     <span class="sep"></span>
     <button id="btn-save" disabled title="Save the configuration, including your changes, as a new folder">Save as…</button>
     <button id="btn-write" class="danger" disabled title="Write the configuration to the radio">Write to radio…</button>
@@ -74,6 +84,35 @@
       </ol>
       <label class="check"><input id="write-confirm" type="checkbox"> I want to overwrite the radio's configuration with this one.</label>
       <menu><button id="write-go" value="go" class="danger" disabled>Write to radio</button><button value="cancel">Cancel</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-tpl-export">
+    <form method="dialog">
+      <h2>Export CPS template</h2>
+      <p class="note">Saves the configuration as shown, including unsaved changes, as a template file (.tpl) that CPS can import into its template library. The radio is not changed.</p>
+      <p id="tpl-export-changes" class="note" hidden></p>
+      <label>Template name (shown in CPS)
+        <span class="row"><input id="tpl-export-name" type="text" spellcheck="false" maxlength="64"></span>
+      </label>
+      <label>New template file
+        <span class="row"><input id="tpl-export-path" type="text" spellcheck="false"><button type="button" id="tpl-export-browse">Browse…</button></span>
+      </label>
+      <menu><button value="go" class="primary">Export</button><button value="cancel">Cancel</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-tpl-import">
+    <form method="dialog">
+      <h2>Import CPS template</h2>
+      <p class="note">Takes the template's settings for the radio of the open folder (model, serial number and RCDB version stay the radio's), saves them as a new folder and opens it. Files the template lacks are kept from the open folder. The radio is not changed: check the result, then write it.</p>
+      <label>Template file
+        <span class="row"><input id="tpl-import-file" type="text" readonly><button type="button" id="tpl-import-browse">Browse…</button></span>
+      </label>
+      <label>Save into new folder
+        <span class="row"><input id="tpl-import-out" type="text" spellcheck="false"><button type="button" id="tpl-import-out-browse">Browse…</button></span>
+      </label>
+      <menu><button value="go" class="primary">Import</button><button value="cancel">Cancel</button></menu>
     </form>
   </dialog>
 

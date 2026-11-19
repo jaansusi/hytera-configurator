@@ -171,6 +171,14 @@ line for validation errors and progress.
   and settings (reason as tooltip); `set_value` refuses them and applies values CPS forces. Library:
   `hytera-codeplug/src/{validation,link_rules}.rs`, `hyt-core/src/{refs,link_rules}.rs`; test
   `tests/references.rs`. Owner check: compare a few greyed fields with CPS's screens.
+- **CSV and CPS templates in the GUI** (built 2026-11-20, offline only): a "More ▾" toolbar menu with Export /
+  Import table as CSV (the table shown: channels, zones, contacts or any list; `hyt_core::sheet`, applied as
+  pending changes cell by cell like typing, with a summary dialog listing refused cells) and Export / Import
+  CPS template (`hyt_core::tpl::export_workspace` exports what is shown, unsaved changes included;
+  `tpl::import_file` imports for the radio of the open folder into a new folder, which is then opened, and shows
+  the warnings, e.g. another serial number). The banner also shows `Workspace::model_note` (generic value
+  ranges). Tests: `tests/tpl.rs` (`workspace_export_includes_unsaved_edits_and_imports_back`),
+  `tests/sheet.rs` (`csv_files_round_trip_with_a_suggested_name`). Owner check: open a GUI-exported `.tpl` in CPS.
 - Later: CPS's page/group structure from `XMLToolCompactData.sdf` for the other settings; `hyt rcdb import`
   for macOS/Linux; installers via `cargo tauri build` in CI.
 

@@ -77,3 +77,20 @@ fn bulk_edits_and_new_channels_come_from_the_sheet() {
     let err = import(&mut ws, "contacts", &to_csv(&c)).unwrap_err();
     assert!(format!("{err:#}").contains("needs a CPS recording"), "{err:#}");
 }
+
+#[test]
+fn csv_files_round_trip_with_a_suggested_name() {
+    let Some(mut ws) = open() else { return };
+    assert_eq!(hyt_core::sheet::suggested_file_name(&ws, "digital"), "start-digital.csv");
+    let list = hyt_core::sheet::suggested_file_name(&ws, "list:QEU_C_ScanConfig");
+    assert!(list.starts_with("start-") && list.ends_with(".csv") && !list.contains(':') && !list.contains(' '), "{list}");
+    let path = std::env::temp_dir().join(format!("hyt-sheet-{}.csv", std::process::id()));
+    let n = hyt_core::sheet::export_to_file(&ws, "contacts", &path).unwrap();
+    assert_eq!(n, table(&ws, "contacts").unwrap().rows.len());
+    let report = hyt_core::sheet::import_file(&mut ws, "contacts", &path).unwrap();
+    assert_eq!((report.changed, report.added, report.errors.len()), (0, 0, 0));
+    std::fs::write(&path, b"No.,Name\n1,\xff\n").unwrap();
+    let err = hyt_core::sheet::import_file(&mut ws, "contacts", &path).unwrap_err().to_string();
+    assert!(err.contains("UTF-8"), "{err}");
+    std::fs::remove_file(&path).unwrap();
+}

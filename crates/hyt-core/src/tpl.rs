@@ -14,11 +14,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Local, Timelike};
 use hytera_codeplug::container::{FileHeader, prepare_for_write};
-use hytera_codeplug::rcdb::TableLink;
+use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot, TableLink};
 use hytera_proto::session::item;
 use serde::{Deserialize, Serialize};
 
-use crate::{SavedRead, load_read, save_with_extras};
+use crate::workspace::Workspace;
+use crate::{ReadManifest, SavedRead, load_read, save_with_extras};
 
 /// Name of the template header entry in a `.tpl`.
 pub const TEMPLATE_HEADER: &str = "tpHeader.data";
@@ -375,7 +376,7 @@ pub fn now() -> DateTime<FixedOffset> {
 // Import
 
 /// What [`import`] did.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct ImportReport {
     /// Files taken from the template.
     pub from_template: usize,
@@ -402,6 +403,16 @@ pub struct SidecarStore {
     pub store: ParamStore,
     /// CRC-32 of the file as imported.
     pub crc32: u32,
+}
+
+/// Read the template file `path` and [`import`] it for the radio read in `like` into the new
+/// folder `out`.
+pub fn import_file(path: &Path, like: &SavedRead, out: &Path) -> Result<(Template, ImportReport)> {
+    let t = Template::read(path)?;
+    let name = t.header.name.clone().unwrap_or_default();
+    let source = format!("CPS template {} (\"{name}\")", path.display());
+    let report = import(&t, like, out, &source)?;
+    Ok((t, report))
 }
 
 /// Save the template's radio files as a new `hyt` folder at `out`, with the radio identity
@@ -488,7 +499,7 @@ pub struct ExportOptions<'a> {
 }
 
 /// What [`build`] did.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct ExportReport {
     pub files: usize,
     /// Files whose store headers came from the import sidecar unchanged.
@@ -500,8 +511,12 @@ pub struct ExportReport {
 /// Build a template from a saved folder: every file in the form CPS writes
 /// ([`prepare_for_write`]), in CPS's entry order, two-level list files carrying their one-level
 /// companion (`links`), headers filled from the folder's radio identity.
-pub fn build(saved: &SavedRead, links: &[TableLink], opts: &ExportOptions) -> Result<(Template, ExportReport)> {
-    let m = &saved.manifest;
+pub fn build(
+    m: &ReadManifest,
+    files: &BTreeMap<u16, Vec<u8>>,
+    links: &[TableLink],
+    opts: &ExportOptions,
+) -> Result<(Template, ExportReport)> {
     let now = dotnet_time(opts.when);
     let side = opts.sidecar.as_ref();
     let mut report = ExportReport::default();
@@ -527,12 +542,14 @@ pub fn build(saved: &SavedRead, links: &[TableLink], opts: &ExportOptions) -> Re
         serial_number: m.serial_number.clone(),
     };
 
-    let prepared: BTreeMap<u16, Vec<u8>> = saved
-        .files
+    let prepared: BTreeMap<u16, Vec<u8>> = files
         .iter()
         .map(|(id, b)| Ok((*id, prepare_for_write(b).with_context(|| format!("file {id} is too short to be a radio file"))?)))
         .collect::<Result<_>>()?;
     let name_of = |id: u16| m.files.iter().find(|f| f.id == id).map(|f| f.name.clone());
+    if let Some(f) = m.files.iter().find(|f| !prepared.contains_key(&f.id)) {
+        bail!("file {} ({}) is missing", f.id, f.name);
+    }
     let borrowed: BTreeMap<u16, Option<String>> = opts
         .seqo_from
         .filter(|t| t.header.rcdb_version.as_deref() == Some(m.rcdb_version.as_str()))
@@ -609,19 +626,74 @@ pub fn entry_order(read_order: &[u16], links: &[TableLink]) -> Vec<u16> {
 /// not at all).
 pub fn export(folder: &Path, out: &Path, links: &[TableLink], opts: ExportOptions) -> Result<(Template, ExportReport)> {
     let saved = load_read(folder)?;
-    let side_path = folder.join(SIDECAR);
-    let sidecar = if opts.sidecar.is_none() && side_path.is_file() {
-        let text = std::fs::read_to_string(&side_path).with_context(|| format!("reading {}", side_path.display()))?;
-        Some(serde_json::from_str(&text).with_context(|| format!("parsing {}", side_path.display()))?)
-    } else {
-        opts.sidecar.clone()
+    export_files(&saved.manifest, &saved.files, folder, out, links, opts)
+}
+
+/// Export `files` (with the radio identity in `manifest`) as the new template file `out`, taking
+/// the import sidecar from `folder` when `opts` has none.
+pub fn export_files(
+    manifest: &ReadManifest,
+    files: &BTreeMap<u16, Vec<u8>>,
+    folder: &Path,
+    out: &Path,
+    links: &[TableLink],
+    opts: ExportOptions,
+) -> Result<(Template, ExportReport)> {
+    let sidecar = match opts.sidecar.clone() {
+        Some(s) => Some(s),
+        None => read_sidecar(folder)?,
     };
     let when = opts.when;
     let opts = ExportOptions { sidecar, ..opts };
-    let (tpl, report) = build(&saved, links, &opts)?;
+    let (tpl, report) = build(manifest, files, links, &opts)?;
     let bytes = tpl.to_bytes(when)?;
     write_new_file(out, &bytes)?;
     Ok((tpl, report))
+}
+
+/// The headers [`import`] saved in `folder`, if it holds them.
+pub fn read_sidecar(folder: &Path) -> Result<Option<Sidecar>> {
+    let path = folder.join(SIDECAR);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(Some(serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?))
+}
+
+/// The template name to offer for `folder`: the imported template's name, else the folder name.
+pub fn suggested_name(folder: &Path) -> String {
+    read_sidecar(folder)
+        .ok()
+        .flatten()
+        .and_then(|s| s.header.name)
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| folder.file_name().map_or_else(|| "hyt".to_string(), |n| n.to_string_lossy().into_owned()))
+}
+
+/// A CPS template for the radio in `m` from CPS's `Templates` folder (next to the RCDB data, or in
+/// the default CPS install), to take file descriptions (`Seqo`) from.
+pub fn cps_template_for(rcdb: &RcdbRoot, m: &ReadManifest) -> Option<Template> {
+    [rcdb.path().join("Templates"), Path::new(DEFAULT_CPS_DATA_DIR).join("Templates")]
+        .iter()
+        .find_map(|d| find_template(d, &m.rcdb_version, m.model_name.as_deref()))
+}
+
+/// Export the open configuration including unsaved edits (what the GUI shows) as the new template
+/// file `out`, named `name` (default: [`suggested_name`] of the open folder). File descriptions
+/// come from a CPS template found by [`cps_template_for`].
+pub fn export_workspace(ws: &Workspace, rcdb: &RcdbRoot, out: &Path, name: Option<String>) -> Result<(Template, ExportReport)> {
+    let m = ws.manifest();
+    let seqo = cps_template_for(rcdb, m);
+    let opts = ExportOptions {
+        name: name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
+        default_name: suggested_name(&ws.folder),
+        description: None,
+        sidecar: None,
+        seqo_from: seqo.as_ref(),
+        when: now(),
+    };
+    export_files(m, ws.files(), &ws.folder, out, ws.links(), opts)
 }
 
 /// Write `bytes` to the new file `out` via `<out>.partial` and a rename.

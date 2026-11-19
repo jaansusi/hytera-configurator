@@ -295,11 +295,9 @@ fn tpl_command(action: TplAction) -> Result<()> {
             }
         }
         TplAction::Import { file, like, out } => {
-            let t = tpl::Template::read(&file)?;
             let reference = load_read(&like)?;
+            let (t, report) = tpl::import_file(&file, &reference, &out)?;
             let name = t.header.name.clone().unwrap_or_default();
-            let source = format!("CPS template {} (\"{name}\")", file.display());
-            let report = tpl::import(&t, &reference, &out, &source)?;
             for w in &report.warnings {
                 println!("warning: {w}");
             }
@@ -325,9 +323,7 @@ fn tpl_command(action: TplAction) -> Result<()> {
             let saved = load_read(&folder)?;
             let seqo = match seqo_from {
                 Some(p) => Some(tpl::Template::read(&p)?),
-                None => [rcdb.path().join("Templates"), Path::new(hytera_codeplug::rcdb::DEFAULT_CPS_DATA_DIR).join("Templates")]
-                    .iter()
-                    .find_map(|d| tpl::find_template(d, &saved.manifest.rcdb_version, saved.manifest.model_name.as_deref())),
+                None => tpl::cps_template_for(&rcdb, &saved.manifest),
             };
             let default_name = folder.file_name().map_or_else(|| "hyt".to_string(), |n| n.to_string_lossy().into_owned());
             let opts = tpl::ExportOptions {

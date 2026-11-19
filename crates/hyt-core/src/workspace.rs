@@ -296,6 +296,11 @@ impl Workspace {
         self.pending.as_ref().map_or(&self.saved.files, |(f, _)| f)
     }
 
+    /// CPS's two-level/one-level list file pairs (`TableLink.xml`).
+    pub fn links(&self) -> &[TableLink] {
+        &self.links
+    }
+
     pub fn def(&self, at: &FieldRef) -> Option<&FieldDef> {
         def_for(&self.layout, at.file, at.block, &at.key)
     }
