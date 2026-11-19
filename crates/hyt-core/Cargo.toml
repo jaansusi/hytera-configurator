@@ -12,4 +12,5 @@ hytera-models.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+csv.workspace = true
 tracing.workspace = true

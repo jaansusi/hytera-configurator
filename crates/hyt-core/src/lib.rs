@@ -5,6 +5,7 @@ pub mod edit;
 pub mod lists;
 pub mod refs;
 pub mod settings;
+pub mod sheet;
 pub mod tables;
 pub mod view;
 pub mod workspace;
