@@ -7,6 +7,7 @@ pub mod refs;
 pub mod settings;
 pub mod sheet;
 pub mod tables;
+pub mod tpl;
 pub mod view;
 pub mod workspace;
 pub mod write_flow;
@@ -360,7 +361,21 @@ pub fn load_read(dir: &Path) -> Result<SavedRead> {
 /// Save `files` (e.g. after [`edit::apply_edits`]) as a new folder in the same layout as
 /// [`save_read`], keeping the radio identity of `base` so `hyt write` accepts it for that radio.
 pub fn save_edited(base: &SavedRead, files: &BTreeMap<u16, Vec<u8>>, out: &Path, source: &str) -> Result<ReadManifest> {
+    save_with_extras(base, files, out, source, &[])
+}
+
+/// [`save_edited`] plus extra files (`name`, contents) written into the same new folder.
+fn save_with_extras(
+    base: &SavedRead,
+    files: &BTreeMap<u16, Vec<u8>>,
+    out: &Path,
+    source: &str,
+    extras: &[(&str, Vec<u8>)],
+) -> Result<ReadManifest> {
     let folder = NewFolder::create(out)?;
+    for (name, bytes) in extras {
+        write(&folder.file(name), bytes)?;
+    }
     let mut records = Vec::new();
     for f in &base.manifest.files {
         let bytes = files.get(&f.id).with_context(|| format!("file {} missing", f.id))?;

@@ -327,3 +327,94 @@ QEU_C_Template_DChannel 252, Comm_RadioInfo 253, QEU_C_Quick_Message 254.
 
 CPS writes back 55 of them, including the call logs and inbox; it skips 242 `QEU_C_E2EEKEYLIST`,
 245 `QEU_C_BTMatchedList` and 253 `Comm_RadioInfo` (see [protocol.md §5](protocol.md#5-full-write-sequence-used-by-cps)).
+
+## 6. CPS template files (`.tpl`)
+
+CPS keeps its template library in `Templates\` of its install folder: one `<Guid>.tpl` per template plus an index
+`TemplatesXML.xml` (an `ArrayOfTemplateBase` holding a copy of each template's header). Everything below is
+**observed** in the owner's four templates (saved 2026-11-18 from the BP515: "Vana", "Backup", "2026-11-18-1",
+"2026-11-18-2") unless marked otherwise. Code: `crates/hyt-core/src/tpl.rs`; CLI `hyt tpl info|import|export`.
+CPS's archive code is `G2CPS.Archives.dll` (not protected; uses DotNetZip, `Ionic.Zip.dll`). Its strings name
+`tpHeader.data`, `psHeader.data`, `.hps`, `.tpl`, and also `tsHeader.data` / `.tsk` / `Tasks` (not seen yet).
+
+**Outer ZIP** (`.tpl`): 59 entries, all deflated, no comment, no data descriptors, no UTF-8 flag. Entry 1 is
+`tpHeader.data`; then one `<FileName>.hps` per radio file (58, including 242, 245 and 253, which CPS never
+writes to the radio). Order: the RCDB file list order (= `hyt read` order), except that the eight one-level files
+of `TableLink.xml` (7, 81, 39, 85, 162, 165, 167, 180) come last, in the order of their two-level partners
+(6 → 7, 80 → 81, 38 → 39, 84 → 85, 161 → 162, 166 → 165, 168 → 167, 179 → 180). Every entry (outer and inner):
+version made by 4.5, needed 2.0, MS-DOS attributes `0x20` (archive), DOS time in local time, and a 36-byte NTFS
+extra field (`0x000A`; mtime/atime/ctime in UTC, the moment of saving) in both the local and the central
+header: DotNetZip's defaults.
+
+**`tpHeader.data`** (XML `TemplateBase` in .NET `XmlSerializer` style: `<?xml version="1.0"?>`, no BOM, CRLF line
+ends, two-space indent, trailing CRLF, empty strings as `<X />`). Elements in this order, with the BP515's values:
+
+| Element | Value | Notes |
+|---|---|---|
+| `OperatePermission` | `All` | |
+| `OperateType` | `Professional` | |
+| `IsCreate` | `false` | inferred: `true` for a template created in CPS without a radio |
+| `Guid` | e.g. `53994d0e-f71c-480c-ab36-396cf586b9fa` | = the `.tpl` file name |
+| `Description` | empty | |
+| `Product` | `BP515 U1` | = info item `0x0011` (model name) |
+| `ModelNumber` | `55P10B00-1L0BAPU1U1…-00040000` | = info item `0x0000` (model code) |
+| `Name` | e.g. `Vana` | the name the owner typed |
+| `RcdbVersion` | `V1.5.24.000` | = info item `0x0002` |
+| `Frequence` | `U1` | the band suffix of the model name (inferred) |
+| `CreatedTime` | e.g. `2026-11-18T19:17:15.0656269+02:00` | local time with offset; up to 7 fraction digits, trailing zeros dropped |
+| `ProductId` | `0` | |
+| `SerialNumber` | `R23N141382` | = info item `0x000B` |
+
+**Each `.hps`** is itself a ZIP: `psHeader.data`, then, for a two-level list file (6, 80, 38, 84, 161, 166,
+168, 179), a copy of its one-level companion (e.g. `QEU_C_Zone.hps` holds `psHeader.data`, `QEU_C_ZoneAlias`,
+`QEU_C_Zone`), then the radio file, named exactly like the `.hps` without extension. The embedded companion
+copies are byte-identical to the companion's own `.hps` in all four templates. **`psHeader.data`** (XML
+`ParamStore`, same style):
+
+| Element | Value |
+|---|---|
+| `Seqo` | CPS's Chinese description of the file plus `1`, e.g. `整机公共1` (Comm_Basic), `常规数字信道1` (DChannel): `File.description` in `XMLToolCompactData.sdf` (observed by query). **Absent** for the eight one-level files |
+| `RcdbVersion` | `V1.5.24.000` |
+| `Key` | the file ID (decimal); always equal to the ID in the radio file's own header |
+| `Type` | `0` |
+| `ModelNumber` | empty |
+| `CreateTime`, `ModifiedTime` | local times, equal in all but one store (1 ms apart). Main files carry about the time the template's data was taken, the one-level files a time 20–80 s later, at saving (inferred) |
+
+**The radio files inside** are in the form CPS writes to the radio (section 4a): every file satisfies
+`crc32(file[20:]) == header CRC` with header bytes 16–19 = 0, and list files have no stale tail. Compared with
+`hyt`'s saved `NNN_Name.bin` of the same day, most files are byte-identical to a file `hyt` or CPS read or wrote;
+Comm_Basic 18, 242 and 245 are the read with CRC and bytes 16–19 recomputed (`prepare_for_write` of the read);
+QEU_C_Config 5 (1 byte) and QEU_C_RxGrpList 80 (bytes 260–267, the leftover member slot of section 4a) differ
+slightly from every capture. **Comm_RadioInfo (253) differs**: the radio holds it empty (zeros after the block
+header), but CPS fills it in templates with the radio's identity. Decoded: `isReadTemplate` = 1, Serial Number,
+`Radio ID` = `1`, Model Name, Radio Data Version (RCDB), Bootloader L2 Version `V1.6.02.001` (= info items
+`0x0045`/`0x0065`, inferred from the value), Bootloader L3 `V1.6.03.001` (= `0x0003`), Frequency Range
+`400-470MHz`, Last Programmed At (= Comm_Basic's Programming Time), Firmware Version, Voice Broadcast Version
+`V1.00.05.000` (= `0xFFF4`), Tuning Data Version (= `0x0006`, hardware version), Model Number, `N/A` for the
+others, licence flags Off.
+
+So a template carries the radio's identity twice: in `tpHeader.data` (product, model number, RCDB version,
+serial) and in file 253.
+
+**How `hyt` uses it:**
+
+- `hyt tpl import <t.tpl> --like <read> --out <folder>` takes every radio file from the template (including
+  CPS's filled 253, which `hyt write` never writes) and the radio identity (manifest: profile, model, serial,
+  firmware, RCDB version, info items) from `<read>`, so `hyt write` accepts the folder for that radio. It refuses
+  a template whose `RcdbVersion` (header or any `psHeader`) or `Product` differs from the read; a different
+  model number or serial number is only a warning. Files the template lacks are kept from the read and listed.
+  The template's headers and a CRC of each imported file go into `template.json` in the folder.
+- `hyt tpl export <folder> --out <t.tpl>` writes every file through `prepare_for_write`, in CPS's entry order,
+  two-level files carrying their companion, with headers from the folder's identity (new `Guid`, `CreatedTime`
+  now, `Frequence` from the model name). With `template.json` from an import, unchanged files keep their
+  original `psHeader` and the template its name and description. `Seqo` comes from `template.json`, else from a
+  CPS template of the same RCDB version (`--seqo-from`, default: CPS's `Templates\` folder); `hyt` keeps no copy
+  of CPS's file descriptions. File 253 is exported as the folder has it (empty for a folder read from the radio:
+  `hyt` does not fill it in like CPS; inferred harmless, unverified).
+- Round trip (`crates/hyt-core/tests/tpl.rs`, all four templates): `export(import(t))` has the same entries in
+  the same order, the same inner entries, byte-identical radio files and `psHeader.data`, and a `tpHeader.data`
+  that differs only in `Guid` and `CreatedTime`. Header XML is rewritten byte for byte. At ZIP level only the
+  timestamps, "version made by" (zip crate 2.0, DotNetZip 4.5) and the deflate output differ (exports are about
+  1.9 KB larger).
+- **Not verified:** that CPS opens an exported `.tpl`, and whether it needs `Seqo`, a filled 253 or an entry in
+  `TemplatesXML.xml` (CPS's import presumably adds that itself). See open question 13.

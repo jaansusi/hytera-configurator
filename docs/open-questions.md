@@ -19,6 +19,7 @@ answer into the right doc and note it under "Resolved" with the date and the evi
 | 10 | Other models and firmware: same framing? which RCDB versions? `TableLink.xml` only ships for V1.5.24.000 | Supporting other radios | Recordings from other radios |
 | 11 | Error handling on the real radio: status codes other than 0, behaviour on a pulled cable mid-write. `hyt` now reports how far a failed write got and points to the backup; tested on the simulated radio (`hytera-proto/src/sim.rs`, `hyt-core/tests/robustness.rs`), not on the BP515 | Robust app | Controlled tests (pull the cable during a read; never during a write) |
 | 12 | Does `hyt-gui` build and run on Linux (WebKitGTK 4.1, `pl2303` driver) and macOS (WKWebView, Prolific driver for the PL2303GC)? Only Windows 11 (WebView2 157) has been tried (2026-11-19) | Cross-platform release | Build in WSL / on a Mac or in CI; read the radio there |
+| 13 | **Does CPS open a `.tpl` written by `hyt tpl export`** (import into its library, open it)? Does it need `Seqo`, a filled `Comm_RadioInfo` (253, `isReadTemplate` = 1) or a `TemplatesXML.xml` entry? Which data fill 253's `Radio ID`, licence flags and `N/A` fields? ([file-format.md §6](file-format.md#6-cps-template-files-tpl)) | Handing `hyt` configurations to CPS | Owner: import an exported file in CPS (no radio needed) and look at its Radio Information page; also try an export made without any `Seqo` |
 
 ## Resolved
 
