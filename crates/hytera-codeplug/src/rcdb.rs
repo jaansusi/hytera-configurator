@@ -9,6 +9,70 @@ use crate::{Error, Result};
 pub const DEFAULT_CPS_DATA_DIR: &str =
     r"C:\Program Files (x86)\Hytera\CPSStarter\CPS\V1.5.24.000.0003";
 
+/// The folders of a CPS install that hyt reads (file lists, layouts, linked lists).
+pub const RCDB_FOLDERS: [&str; 3] = ["RcdbJsons", "RcdbXmls", "RCDB"];
+
+/// The per-user copy of CPS's RCDB data made by [`import`] (`<data dir>/cps`).
+pub fn user_copy_dir() -> Option<PathBuf> {
+    Some(crate::options::data_dir()?.join("cps"))
+}
+
+/// Where to load RCDB data from when no folder is given: the CPS install if it is there, else the
+/// per-user copy if that exists, else the CPS install path (so error messages name it).
+pub fn default_root() -> PathBuf {
+    let cps = PathBuf::from(DEFAULT_CPS_DATA_DIR);
+    if cps.join("RcdbJsons").is_dir() {
+        return cps;
+    }
+    match user_copy_dir() {
+        Some(copy) if copy.join("RcdbJsons").is_dir() => copy,
+        _ => cps,
+    }
+}
+
+fn copy_tree(src: &Path, dst: &Path) -> Result<usize> {
+    std::fs::create_dir_all(dst).map_err(|source| Error::Io { path: dst.to_path_buf(), source })?;
+    let mut n = 0;
+    let entries = std::fs::read_dir(src).map_err(|source| Error::Io { path: src.to_path_buf(), source })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Io { path: src.to_path_buf(), source })?;
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        if from.is_dir() {
+            n += copy_tree(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|source| Error::Io { path: from.clone(), source })?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// Copy the RCDB folders hyt needs ([`RCDB_FOLDERS`]) from `src` (a CPS install or a copy of one)
+/// to `dst`. Returns the number of files copied. Hytera data: keep it out of shared folders.
+pub fn import(src: &Path, dst: &Path) -> Result<usize> {
+    if !src.join("RcdbJsons").is_dir() {
+        return Err(Error::Invalid(format!("{} has no RcdbJsons folder (expected a CPS install or a copy of one)", src.display())));
+    }
+    let mut n = 0;
+    for folder in RCDB_FOLDERS {
+        if src.join(folder).is_dir() {
+            n += copy_tree(&src.join(folder), &dst.join(folder))?;
+        }
+    }
+    Ok(n)
+}
+
+/// RCDB versions with a layout in `root` (`RcdbJsons\<version>.txt`), sorted.
+pub fn versions(root: &Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(root.join("RcdbJsons"))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok()?.file_name().to_str()?.strip_suffix(".txt").map(str::to_string))
+        .collect();
+    v.sort();
+    v
+}
+
 /// One radio file as listed by the RCDB file list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileEntry {
@@ -131,6 +195,29 @@ pub fn parse_file_list(xml: &str) -> Result<Vec<FileEntry>> {
         out.push(FileEntry { id, name });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    #[test]
+    fn import_copies_the_rcdb_folders() {
+        let base = std::env::temp_dir().join(format!("hyt-rcdb-import-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("cps");
+        for (dir, file) in [("RcdbJsons", "V1.txt"), ("RCDB/TableLink", "TableLink.xml"), ("RCDB/FileID", "V1.xml"), ("Other", "x.dll")] {
+            std::fs::create_dir_all(src.join(dir)).unwrap();
+            std::fs::write(src.join(dir).join(file), b"x").unwrap();
+        }
+        let dst = base.join("copy");
+        assert_eq!(import(&src, &dst).unwrap(), 3);
+        assert!(dst.join("RCDB/TableLink/TableLink.xml").is_file());
+        assert!(!dst.join("Other").exists(), "only the RCDB folders are copied");
+        assert_eq!(versions(&dst), ["V1"]);
+        assert!(import(&base.join("nothing"), &dst).is_err());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }
 
 #[cfg(test)]

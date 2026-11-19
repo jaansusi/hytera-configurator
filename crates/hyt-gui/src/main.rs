@@ -15,7 +15,6 @@ mod commands;
 
 use std::path::PathBuf;
 
-use hytera_codeplug::rcdb::DEFAULT_CPS_DATA_DIR;
 
 /// The simulated radio from `HYT_GUI_SIM`, if set and loadable.
 fn simulated_radio() -> Option<(hytera_proto::sim::SharedSim, String)> {
@@ -36,7 +35,7 @@ fn simulated_radio() -> Option<(hytera_proto::sim::SharedSim, String)> {
 fn main() {
     tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).with_writer(std::io::stderr).init();
     let state = commands::AppState::new(
-        std::env::var_os("HYT_RCDB").map_or_else(|| PathBuf::from(DEFAULT_CPS_DATA_DIR), PathBuf::from),
+        std::env::var_os("HYT_RCDB").map_or_else(hytera_codeplug::rcdb::default_root, PathBuf::from),
         std::env::var_os("HYT_OPTIONS").map(PathBuf::from),
         std::env::args_os().nth(1).map(PathBuf::from),
         std::env::var("HYT_GUI_DEV").is_ok_and(|v| v == "1"),

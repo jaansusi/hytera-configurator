@@ -8,7 +8,7 @@ use hyt_core::write_flow::{WriteEvent, WriteJob, WriteSettings, write_config};
 use hyt_core::{decode_read, info_entries, load_layout, load_read, read_radio, save_edited, save_read};
 use hytera_codeplug::decode::DecodedFile;
 use hytera_codeplug::options::Options;
-use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot};
+use hytera_codeplug::rcdb::RcdbRoot;
 use hytera_models::profile_for;
 use hytera_proto::Session;
 use hytera_proto::transport::{ReplayTransport, Transport, available_ports};
@@ -45,8 +45,8 @@ enum Command {
         #[arg(short, long)]
         out: PathBuf,
         /// Folder with Hytera's RCDB data (a CPS install or a copy of its RCDB folders).
-        #[arg(long, env = "HYT_RCDB", default_value = DEFAULT_CPS_DATA_DIR)]
-        rcdb: PathBuf,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
     },
     /// Decode a folder saved by `hyt read` into named settings (JSON).
     Decode {
@@ -58,8 +58,8 @@ enum Command {
         /// Use CPS's display text for values ("High", "444.725 MHz") where it converts back exactly.
         #[arg(long)]
         labels: bool,
-        #[arg(long, env = "HYT_RCDB", default_value = DEFAULT_CPS_DATA_DIR)]
-        rcdb: PathBuf,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
         /// Option catalogue (default: the per-user data folder).
         #[arg(long, env = "HYT_OPTIONS")]
         options: Option<PathBuf>,
@@ -74,8 +74,8 @@ enum Command {
         /// New folder for the result.
         #[arg(short, long)]
         out: PathBuf,
-        #[arg(long, env = "HYT_RCDB", default_value = DEFAULT_CPS_DATA_DIR)]
-        rcdb: PathBuf,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
         #[arg(long, env = "HYT_OPTIONS")]
         options: Option<PathBuf>,
     },
@@ -85,8 +85,8 @@ enum Command {
         before: PathBuf,
         /// The "after" folder.
         after: PathBuf,
-        #[arg(long, env = "HYT_RCDB", default_value = DEFAULT_CPS_DATA_DIR)]
-        rcdb: PathBuf,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
         #[arg(long, env = "HYT_OPTIONS")]
         options: Option<PathBuf>,
     },
@@ -97,11 +97,17 @@ enum Command {
         /// List every field of every file instead of the overview.
         #[arg(long)]
         all: bool,
-        #[arg(long, env = "HYT_RCDB", default_value = DEFAULT_CPS_DATA_DIR)]
-        rcdb: PathBuf,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
         /// Option catalogue from tools/export-rcdb-options.ps1 (default: the per-user data folder).
         #[arg(long, env = "HYT_OPTIONS")]
         options: Option<PathBuf>,
+    },
+    /// Hytera's layout data (RCDB): where it is loaded from, and copying it from a CPS install so
+    /// hyt works without CPS (e.g. on macOS or Linux, from a copy of a Windows CPS install).
+    Rcdb {
+        #[command(subcommand)]
+        action: RcdbAction,
     },
     /// Write a folder saved by `hyt read` back to the radio. Takes a fresh backup first, refuses a
     /// different radio, and reads back afterwards to verify.
@@ -115,12 +121,85 @@ enum Command {
         /// New folder for the fresh backup taken right before writing.
         #[arg(long)]
         backup: PathBuf,
-        #[arg(long, env = "HYT_RCDB", default_value = DEFAULT_CPS_DATA_DIR)]
-        rcdb: PathBuf,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
         /// Write even though writing has not been verified for this model yet.
         #[arg(long)]
         allow_unverified: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum RcdbAction {
+    /// Show which RCDB data and option catalogues hyt uses.
+    Status,
+    /// Copy the RCDB folders (and exported options.json / ui.json, if the source has them) into the
+    /// per-user data folder. FROM is a CPS install folder or a copy of one, or a copied `hyt/rcdb`
+    /// data folder.
+    Import { from: PathBuf },
+}
+
+/// The RCDB data folder: as given (or `HYT_RCDB`), else the CPS install, else the per-user copy.
+fn rcdb_root(given: Option<PathBuf>) -> RcdbRoot {
+    RcdbRoot::new(given.unwrap_or_else(hytera_codeplug::rcdb::default_root))
+}
+
+fn rcdb_command(action: RcdbAction) -> Result<()> {
+    use hytera_codeplug::options::data_dir;
+    use hytera_codeplug::rcdb::{default_root, import, user_copy_dir, versions};
+    let data = data_dir().context("no per-user data folder (LOCALAPPDATA / XDG_DATA_HOME / HOME)")?;
+    match action {
+        RcdbAction::Status => {
+            let root = std::env::var_os("HYT_RCDB").map_or_else(default_root, PathBuf::from);
+            let found = versions(&root);
+            println!("RCDB data:   {}{}", root.display(), if found.is_empty() { "  (not found)" } else { "" });
+            if let (Some(first), Some(last)) = (found.first(), found.last()) {
+                println!("  layouts for {} RCDB versions ({first} … {last})", found.len());
+            }
+            if let Some(copy) = user_copy_dir() {
+                println!("User copy:   {}{}", copy.display(), if copy.join("RcdbJsons").is_dir() { "" } else { "  (none; see `hyt rcdb import`)" });
+            }
+            println!("Catalogues:  {}", data.display());
+            let mut any = false;
+            for v in &found {
+                let has = |f: &str| data.join(v).join(f).is_file();
+                if has("options.json") || has("ui.json") {
+                    any = true;
+                    let yn = |b: bool| if b { "yes" } else { "no" };
+                    println!("  {v}: options.json {}, ui.json {}", yn(has("options.json")), yn(has("ui.json")));
+                }
+            }
+            if !any {
+                println!("  none exported yet (run tools/export-rcdb-options.ps1 on Windows with CPS)");
+            }
+        }
+        RcdbAction::Import { from } => {
+            let mut copied = 0;
+            let cps = if from.join("RcdbJsons").is_dir() { Some(from.clone()) } else { Some(from.join("cps")).filter(|p| p.join("RcdbJsons").is_dir()) };
+            if let Some(src) = cps {
+                let dst = user_copy_dir().context("no per-user data folder")?;
+                let n = import(&src, &dst)?;
+                println!("Copied {n} RCDB files from {} to {}", src.display(), dst.display());
+                copied += n;
+            }
+            // Exported catalogues: <from>/<version>/{options,ui}.json (a copied hyt/rcdb folder).
+            for entry in std::fs::read_dir(&from).with_context(|| format!("reading {}", from.display()))?.flatten() {
+                let dir = entry.path();
+                for f in ["options.json", "ui.json"] {
+                    if dir.join(f).is_file() && dir != data.join(entry.file_name()) {
+                        std::fs::create_dir_all(data.join(entry.file_name()))?;
+                        std::fs::copy(dir.join(f), data.join(entry.file_name()).join(f))?;
+                        println!("Copied {} {f}", entry.file_name().to_string_lossy());
+                        copied += 1;
+                    }
+                }
+            }
+            if copied == 0 {
+                bail!("{} is neither a CPS install (RcdbJsons) nor a copied hyt data folder", from.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Args)]
@@ -194,7 +273,7 @@ fn main() -> Result<()> {
         Command::Read { source, out, rcdb } => {
             let (transport, source_name) = source.open()?;
             let mut session = Session::new(transport);
-            let rcdb = RcdbRoot::new(rcdb);
+            let rcdb = rcdb_root(rcdb);
             let result = read_radio(&mut session, &rcdb, |entry, bytes, _, _| {
                 println!("  read file {:>3} {:<28} {:>6} bytes", entry.id, entry.name, bytes.len());
             })?;
@@ -211,7 +290,7 @@ fn main() -> Result<()> {
         }
         Command::Apply { folder, edits, out, rcdb, options } => {
             let saved = load_read(&folder)?;
-            let rcdb = RcdbRoot::new(rcdb);
+            let rcdb = rcdb_root(rcdb);
             let layout = load_layout(&saved, &rcdb)?;
             let links = rcdb.table_links()?;
             let options = load_options(options, &saved.manifest.rcdb_version);
@@ -234,7 +313,7 @@ fn main() -> Result<()> {
             if a.manifest.rcdb_version != b.manifest.rcdb_version {
                 bail!("the folders have different RCDB versions ({} vs {})", a.manifest.rcdb_version, b.manifest.rcdb_version);
             }
-            let layout = load_layout(&a, &RcdbRoot::new(rcdb))?;
+            let layout = load_layout(&a, &rcdb_root(rcdb))?;
             let options = load_options(options, &a.manifest.rcdb_version);
             let (da, db) = (decode_read(&a, &layout)?, decode_read(&b, &layout)?);
             let mut all = Vec::new();
@@ -253,7 +332,7 @@ fn main() -> Result<()> {
         }
         Command::Decode { folder, out, labels, rcdb, options } => {
             let saved = load_read(&folder)?;
-            let layout = load_layout(&saved, &RcdbRoot::new(rcdb))?;
+            let layout = load_layout(&saved, &rcdb_root(rcdb))?;
             let mut decoded = decode_read(&saved, &layout)?;
             if labels {
                 match load_options(options, &saved.manifest.rcdb_version) {
@@ -272,7 +351,7 @@ fn main() -> Result<()> {
         }
         Command::Show { folder, all, rcdb, options } => {
             let saved = load_read(&folder)?;
-            let layout = load_layout(&saved, &RcdbRoot::new(rcdb))?;
+            let layout = load_layout(&saved, &rcdb_root(rcdb))?;
             let decoded = decode_read(&saved, &layout)?;
             let version = &saved.manifest.rcdb_version;
             let options = load_options(options, version);
@@ -283,8 +362,9 @@ fn main() -> Result<()> {
                 print!("{}", summary(&saved.manifest, &decoded, &labels));
             }
         }
+        Command::Rcdb { action } => rcdb_command(action)?,
         Command::Write { port, from, backup, rcdb, allow_unverified } => {
-            write_command(&port, &from, &backup, &RcdbRoot::new(rcdb), allow_unverified)?;
+            write_command(&port, &from, &backup, &rcdb_root(rcdb), allow_unverified)?;
         }
     }
     Ok(())

@@ -12,6 +12,16 @@ use serde::Deserialize;
 
 use crate::{Error, Result};
 
+/// hyt's per-user folder for Hytera data: `%LOCALAPPDATA%\hyt\rcdb` on Windows,
+/// `$XDG_DATA_HOME/hyt/rcdb` (or `~/.local/share/hyt/rcdb`) elsewhere.
+pub fn data_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("XDG_DATA_HOME"))
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))?;
+    Some(base.join("hyt").join("rcdb"))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
     pub raw: i64,
@@ -171,11 +181,7 @@ impl Options {
     /// `%LOCALAPPDATA%\hyt\rcdb\<version>\options.json` on Windows,
     /// `$XDG_DATA_HOME/hyt/rcdb/<version>/options.json` (or `~/.local/share/...`) elsewhere.
     pub fn default_path(version: &str) -> Option<PathBuf> {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .or_else(|| std::env::var_os("XDG_DATA_HOME"))
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))?;
-        Some(base.join("hyt").join("rcdb").join(version).join("options.json"))
+        Some(data_dir()?.join(version).join("options.json"))
     }
 
     pub fn param(&self, id: u32) -> Option<&ParamInfo> {
