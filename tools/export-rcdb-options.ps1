@@ -69,6 +69,35 @@ try {
         })
     }
     $r.Close()
+
+    # How CPS groups parameters on its screens (categories > pages > groups > parameters), exported
+    # as flat link tables for hyt-gui's settings view. Parameters are given by their layout id
+    # (Param.id); UiGroupParamLink refers to Param.param_id.
+    # Each row becomes an array; $kinds gives each column's type ("i" int, "s" string).
+    function Get-Table($sql, $kinds) {
+        $cmd.CommandText = $sql
+        $rr = $cmd.ExecuteReader()
+        $rows = New-Object System.Collections.Generic.List[object]
+        while ($rr.Read()) {
+            $row = New-Object object[] $kinds.Length
+            for ($i = 0; $i -lt $kinds.Length; $i++) {
+                if ($kinds[$i] -eq "i") { $row[$i] = [int]$rr.GetValue($i) } else { $row[$i] = [string]$rr.GetValue($i) }
+            }
+            $rows.Add($row)
+        }
+        $rr.Close()
+        return , $rows
+    }
+    $ui = [ordered]@{ rcdb_version = $version }
+    $ui.roots = Get-Table "SELECT CategoryId, [Index] FROM UiModelCategoryLink WHERE ModelOnlyId = 1" @("i", "i")
+    $ui.categories = Get-Table "SELECT Id, NameEn FROM UiCategory" @("i", "s")
+    $ui.category_children = Get-Table "SELECT ParentId, ChildId, [Index] FROM UiCategoriesLink" @("i", "i", "i")
+    $ui.category_pages = Get-Table "SELECT CategoryId, PageId, [Index] FROM UiCategoryPageLink" @("i", "i", "i")
+    $ui.pages = Get-Table "SELECT Id, NameEn, Type FROM UiPage" @("i", "s", "i")
+    $ui.page_groups = Get-Table "SELECT PageId, GroupId, [Index] FROM UiPageGroupLink" @("i", "i", "i")
+    $ui.groups = Get-Table "SELECT Id, NameEn FROM UiGroup" @("i", "s")
+    $ui.group_children = Get-Table "SELECT ParentGroupId, ChildGroupId, [Index] FROM UiGroupsLink" @("i", "i", "i")
+    $ui.group_params = Get-Table "SELECT l.GroupId, p.id, l.[Index] FROM UiGroupParamLink l JOIN Param p ON p.param_id = l.ParamId" @("i", "i", "i")
     $conn.Close()
 }
 finally {
@@ -88,3 +117,8 @@ $json = $doc | ConvertTo-Json -Depth 6 -Compress
 [IO.File]::WriteAllText($OutFile, $json, (New-Object System.Text.UTF8Encoding($false)))
 $withOptions = @($order | Where-Object { $params[$_].options.Count -gt 0 }).Count
 Write-Output "Exported $($order.Count) parameters ($withOptions with options) for RCDB $version to $OutFile"
+
+$uiFile = Join-Path (Split-Path $OutFile) "ui.json"
+$uiJson = $ui | ConvertTo-Json -Depth 4 -Compress
+[IO.File]::WriteAllText($uiFile, $uiJson, (New-Object System.Text.UTF8Encoding($false)))
+Write-Output "Exported CPS's screen structure ($($ui.pages.Count) pages, $($ui.group_params.Count) parameter links) to $uiFile"

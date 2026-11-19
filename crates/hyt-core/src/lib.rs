@@ -3,6 +3,7 @@
 
 pub mod edit;
 pub mod refs;
+pub mod settings;
 pub mod tables;
 pub mod view;
 pub mod workspace;

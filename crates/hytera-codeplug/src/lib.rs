@@ -6,6 +6,7 @@ pub mod layout;
 pub mod options;
 pub mod rcdb;
 pub mod structure;
+pub mod ui;
 pub mod value;
 
 #[derive(Debug, thiserror::Error)]

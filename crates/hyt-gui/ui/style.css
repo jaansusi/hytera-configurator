@@ -175,6 +175,20 @@ table.members-table td.member-actions { width: 1%; white-space: nowrap; text-ali
 .add-member select { flex: 1; min-width: 0; }
 table.changes td { white-space: normal; }
 
+/* Settings view */
+#settings-view .view-head input[type=search] { margin-left: auto; width: 320px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.settings-layout { display: flex; gap: 16px; align-items: flex-start; }
+#settings-topics { width: 190px; flex: none; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; }
+#settings-topics button { display: flex; justify-content: space-between; border: none; background: none; text-align: left; padding: 6px 10px; }
+#settings-topics button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+#settings-body { flex: 1; min-width: 0; max-width: 860px; }
+.settings-topic { margin-bottom: 24px; }
+.settings-section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px 12px; margin-bottom: 12px; }
+.settings-section h3 { margin: 2px 0 8px; color: var(--text); text-transform: none; letter-spacing: 0; font-size: 14px; }
+.settings-group h4 { margin: 12px 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; }
+.settings-section .fields { grid-template-columns: minmax(180px, 45%) 1fr; }
+.badge { background: var(--changed-line); color: #fff; border-radius: 9px; padding: 0 7px; font-size: 12px; font-weight: 600; }
+
 /* Detail panel */
 .detail-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
 .detail-head h2 { margin: 0; }

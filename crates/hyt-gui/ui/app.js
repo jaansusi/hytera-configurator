@@ -14,6 +14,10 @@ const state = {
   selected: null,  // selected row index in state.table
   detail: null,    // detail fields of the selected row
   channelOptions: [], // channels that can be put into a zone (zones view)
+  settingsIndex: [],  // settings topics
+  settingsTopic: null, // selected topic id
+  settingsQuery: '',   // search text
+  settingsData: [],    // topics shown (one, or search results)
   busy: false,     // a radio operation is running
 };
 
@@ -96,6 +100,14 @@ async function loadView() {
     state.table = null;
     state.changes = await invoke('get_changes');
     state.detail = null;
+  } else if (state.view === 'settings') {
+    state.table = null;
+    state.detail = null;
+    state.settingsIndex = await invoke('get_settings_index');
+    if (!state.settingsIndex.some((t) => t.id === state.settingsTopic)) state.settingsTopic = state.settingsIndex[0]?.id || null;
+    state.settingsData = state.settingsQuery.trim()
+      ? await invoke('search_settings', { query: state.settingsQuery })
+      : (state.settingsTopic ? [await invoke('get_settings_topic', { id: state.settingsTopic })] : []);
   } else {
     state.table = await invoke('get_table', { id: state.view });
     if (state.selected != null && state.selected >= state.table.rows.length) state.selected = null;
@@ -218,6 +230,7 @@ function renderNav() {
   }, h('span', {}, title), extra);
   nav.replaceChildren(
     ...o.tables.map((t) => item(t.id, t.title, h('span', { class: 'count' }, `${t.rows}/${t.capacity}`))),
+    ...(o.has_settings ? [item('settings', 'Settings', null)] : []),
     h('hr'),
     item('changes', 'Changes', o.changes ? h('span', { class: 'badge' }, o.changes) : h('span', { class: 'count' }, '0')),
   );
@@ -237,6 +250,10 @@ function renderContent() {
   }
   if (state.view === 'changes') {
     c.replaceChildren(renderChanges());
+    return;
+  }
+  if (state.view === 'settings') {
+    renderSettings(c);
     return;
   }
   const t = state.table;
@@ -403,6 +420,80 @@ function renderDetail() {
   }
   parts.push(grid);
   d.replaceChildren(...parts);
+}
+
+/** Settings view: topic list + form. The search box survives re-rendering (keeps focus). */
+function renderSettings(c) {
+  let view = document.getElementById('settings-view');
+  if (!view || !c.contains(view)) {
+    const search = h('input', { id: 'settings-search', type: 'search', placeholder: 'Search all settings…', spellcheck: 'false', value: state.settingsQuery });
+    let timer = null;
+    search.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        state.settingsQuery = search.value;
+        await refresh();
+      }, 200);
+    });
+    view = h('div', { id: 'settings-view' },
+      h('div', { class: 'view-head' }, h('h1', {}, 'Settings'), search),
+      h('div', { class: 'settings-layout' }, h('div', { id: 'settings-topics' }), h('div', { id: 'settings-body' })));
+    c.replaceChildren(view);
+  }
+  const searching = state.settingsQuery.trim() !== '';
+  document.getElementById('settings-topics').replaceChildren(...state.settingsIndex.map((t) => h('button', {
+    class: !searching && t.id === state.settingsTopic ? 'active' : '',
+    onclick: async () => {
+      state.settingsTopic = t.id;
+      state.settingsQuery = '';
+      document.getElementById('settings-search').value = '';
+      await refresh();
+      document.getElementById('settings-body').scrollTop = 0;
+    },
+  }, h('span', {}, t.title), t.changed ? h('span', { class: 'badge' }, t.changed) : (t.read_only ? h('span', { class: 'count', title: 'Read-only' }, '🔒') : null))));
+  const body = document.getElementById('settings-body');
+  if (searching && !state.settingsData.length) {
+    body.replaceChildren(h('p', { class: 'note' }, `No setting matches "${state.settingsQuery}".`));
+    return;
+  }
+  body.replaceChildren(...state.settingsData.map((t) => h('div', { class: 'settings-topic' },
+    h('h2', {}, t.title),
+    t.note ? h('p', { class: 'note' }, t.note) : null,
+    ...t.sections.map((s) => h('section', { class: 'settings-section' },
+      h('h3', {}, s.title),
+      ...s.groups.map((g) => h('div', { class: 'settings-group' },
+        g.title ? h('h4', {}, g.title) : null,
+        renderSettingRows(g.settings))))))));
+}
+
+function renderSettingRows(settings) {
+  const grid = h('div', { class: 'fields' });
+  for (const s of settings) {
+    const label = h('span', { class: 'label', title: s.column.key }, s.label);
+    const value = h('span', { class: `value${s.cell.changed ? ' changed' : ''}` });
+    if (s.cell.editable && s.column.editor.kind !== 'read_only') {
+      let sending = false;
+      const { wrap, control } = makeEditor(s.column, s.cell, async (text) => {
+        if (sending || text == null || text === s.cell.text) {
+          if (text == null) control.value = s.cell.text;
+          return;
+        }
+        sending = true;
+        const err = await commit(s.cell.field, text);
+        sending = false;
+        if (err) {
+          control.classList.add('invalid');
+          control.title = err;
+        }
+      });
+      value.append(...(wrap === control ? [control] : [...wrap.childNodes]));
+    } else {
+      value.append(h('span', { class: 'ro', title: s.read_only || s.cell.text }, s.cell.text));
+      if (s.column.unit) value.append(h('span', { class: 'unit' }, s.column.unit));
+    }
+    grid.append(label, value);
+  }
+  return grid;
 }
 
 function renderChanges() {

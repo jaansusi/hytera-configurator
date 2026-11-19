@@ -185,6 +185,8 @@ pub struct Workspace {
     pub options: Option<Options>,
     /// Why no option catalogue is loaded, when it is not.
     pub options_note: Option<String>,
+    /// CPS's screen structure (`ui.json` next to the option catalogue), for the settings view.
+    pub ui: Option<hytera_codeplug::ui::UiTree>,
     links: Vec<TableLink>,
     base: Vec<DecodedFile>,
     working: Vec<DecodedFile>,
@@ -206,12 +208,18 @@ impl Workspace {
             Err(note) => (None, Some(note)),
         };
         let base = decode_read(&saved, &layout)?;
+        let ui_path = match options_path {
+            Some(p) => Some(p.with_file_name("ui.json")),
+            None => hytera_codeplug::ui::UiTree::default_path(&version),
+        };
+        let ui = ui_path.and_then(|p| hytera_codeplug::ui::UiTree::load(&p).ok()).filter(|u| u.rcdb_version == version);
         Ok(Workspace {
             folder: folder.to_path_buf(),
             saved,
             layout,
             options,
             options_note,
+            ui,
             links,
             working: base.clone(),
             view: base.clone(),

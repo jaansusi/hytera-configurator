@@ -260,7 +260,7 @@ fn editor(options: Option<&Options>, def: &FieldDef, key: &str) -> Editor {
     }
 }
 
-fn column(ws: &Workspace, file: u16, block: u16, key: &str, title: &str) -> Column {
+pub(crate) fn column(ws: &Workspace, file: u16, block: u16, key: &str, title: &str) -> Column {
     let options = ws.options.as_ref();
     match crate::edit::def_for(&ws.layout, file, block, key) {
         Some(def) => Column { key: key.into(), title: title.into(), unit: unit(options, def), editor: editor(options, def, key) },
@@ -268,7 +268,7 @@ fn column(ws: &Workspace, file: u16, block: u16, key: &str, title: &str) -> Colu
     }
 }
 
-fn cell(ws: &Workspace, at: FieldRef, strip_unit: bool) -> Cell {
+pub(crate) fn cell(ws: &Workspace, at: FieldRef, strip_unit: bool) -> Cell {
     let def = ws.def(&at);
     let Some(value) = value_at(ws.view(), &at) else {
         return Cell { text: String::new(), changed: false, editable: false, field: None, editor: None };
@@ -493,6 +493,12 @@ pub fn change_list(ws: &Workspace) -> Vec<ChangeView> {
                     None => format!("Zone {} \"{name}\"", a.record + 1),
                 };
             }
+            let listed = matches!(c.file_name.as_str(), "QEU_C_DChannel" | "QEU_C_AChannel" | "QEU_C_ZoneAlias" | "QEU_C_Zone" | "QEU_C_DContact");
+            let mut setting_label = None;
+            if !structural && !listed && let Some(p) = crate::settings::place_of(ws, c.file_id, c.block_id, &c.key) {
+                place_text = p;
+                setting_label = crate::settings::label_of(ws, c.file_id, c.block_id, &c.key);
+            }
             let def = (!structural).then(|| crate::edit::def_for(&ws.layout, c.file_id, c.block_id, &c.key)).flatten();
             // Old values are member positions of the opened folder, new ones of the view.
             let member_at = |files: &[DecodedFile], record: Option<usize>| -> Option<(i64, i64)> {
@@ -543,7 +549,7 @@ pub fn change_list(ws: &Workspace) -> Vec<ChangeView> {
                 (ADDED, false) => "Added".to_string(),
                 (REMOVED, false) => "Removed".to_string(),
                 ("Channel List" | "Channel Type", true) => "Channel".to_string(),
-                (k, _) => k.to_string(),
+                (k, _) => setting_label.unwrap_or_else(|| k.to_string()),
             };
             // Reverting is offered for value changes of records that existed, outside zone members.
             let field = at.filter(|a| !structural && a.member.is_none() && ws.original_value(a).is_some());

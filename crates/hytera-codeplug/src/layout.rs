@@ -158,6 +158,11 @@ impl Layout {
         self.blocks.get(&(file_id, block_id)).map_or(&[], Vec::as_slice)
     }
 
+    /// Every definition with layout id `id` (normally one).
+    pub fn find(&self, id: u32) -> Vec<&FieldDef> {
+        self.blocks.values().flatten().filter(|f| f.id == id).collect()
+    }
+
     pub fn block_ids(&self, file_id: u16) -> Vec<u16> {
         self.blocks.keys().filter(|(f, _)| *f == file_id).map(|&(_, b)| b).collect()
     }

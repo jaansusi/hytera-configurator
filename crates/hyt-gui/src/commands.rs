@@ -133,6 +133,8 @@ pub struct Overview {
     rcdb_version: String,
     /// Why values are shown raw (no option catalogue), if they are.
     options_note: Option<String>,
+    /// CPS's screen structure (ui.json) is loaded, so the settings view is available.
+    has_settings: bool,
     changes: usize,
     tables: Vec<TableInfo>,
 }
@@ -147,6 +149,7 @@ fn overview(ws: &Workspace) -> Overview {
         firmware: m.firmware_version.clone(),
         rcdb_version: m.rcdb_version.clone(),
         options_note: ws.options_note.clone(),
+        has_settings: ws.ui.is_some(),
         // As listed in the Changes view (a zone member's type and number count once).
         changes: tables::change_list(ws).len(),
         tables: TABLE_IDS
@@ -220,6 +223,22 @@ pub fn remove_channel(state: State<'_, AppState>, kind: ChannelKind, position: u
         ws.remove_channel(kind, position)?;
         Ok(overview(ws))
     })
+}
+
+/// The settings topics (see `hyt_core::settings`).
+#[tauri::command]
+pub fn get_settings_index(state: State<'_, AppState>) -> CmdResult<Vec<hyt_core::settings::TopicInfo>> {
+    state.with_ws(|ws| Ok(hyt_core::settings::index(ws)))
+}
+
+#[tauri::command]
+pub fn get_settings_topic(state: State<'_, AppState>, id: String) -> CmdResult<hyt_core::settings::Topic> {
+    state.with_ws(|ws| hyt_core::settings::topic(ws, &id).with_context(|| format!("no settings topic {id:?}")))
+}
+
+#[tauri::command]
+pub fn search_settings(state: State<'_, AppState>, query: String) -> CmdResult<Vec<hyt_core::settings::Topic>> {
+    state.with_ws(|ws| Ok(hyt_core::settings::search(ws, &query)))
 }
 
 /// Channels that can be put into a zone.
