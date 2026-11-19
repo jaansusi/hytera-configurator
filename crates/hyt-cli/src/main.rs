@@ -103,6 +103,11 @@ enum Command {
         #[arg(long, env = "HYT_OPTIONS")]
         options: Option<PathBuf>,
     },
+    /// Tables as spreadsheets (CSV): every field of every record with CPS's labels and units.
+    Csv {
+        #[command(subcommand)]
+        action: CsvAction,
+    },
     /// Hytera's layout data (RCDB): where it is loaded from, and copying it from a CPS install so
     /// hyt works without CPS (e.g. on macOS or Linux, from a copy of a Windows CPS install).
     Rcdb {
@@ -142,6 +147,89 @@ enum RcdbAction {
     /// per-user data folder. FROM is a CPS install folder or a copy of one, or a copied `hyt/rcdb`
     /// data folder.
     Import { from: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum CsvAction {
+    /// List the tables of a folder (ids for export/import).
+    Tables {
+        folder: PathBuf,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
+    },
+    /// Write table TABLE (e.g. digital, analog, zones, contacts, list:QEU_C_ScanConfig) as CSV.
+    Export {
+        folder: PathBuf,
+        table: String,
+        /// CSV file to write (default: standard output).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
+    },
+    /// Apply an edited CSV to table TABLE of FOLDER and save the result as a new folder. Rows are
+    /// matched by "No."; extra rows add channels (channel tables only); nothing is removed.
+    Import {
+        folder: PathBuf,
+        table: String,
+        csv: PathBuf,
+        #[arg(short, long)]
+        out: PathBuf,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
+    },
+}
+
+fn csv_command(action: CsvAction) -> Result<()> {
+    use hyt_core::workspace::Workspace;
+    match action {
+        CsvAction::Tables { folder, rcdb } => {
+            let ws = Workspace::open(&folder, &rcdb_root(rcdb), None)?;
+            for id in hyt_core::tables::TABLE_IDS {
+                if let Some(t) = hyt_core::tables::table(&ws, id) {
+                    println!("{:<28} {} ({} of {})", t.id, t.title, t.rows.len(), t.capacity);
+                }
+            }
+            for l in hyt_core::lists::index(&ws) {
+                println!("{:<28} {} ({} of {})", l.id, l.title, l.rows, l.capacity);
+            }
+        }
+        CsvAction::Export { folder, table, out, rcdb } => {
+            let ws = Workspace::open(&folder, &rcdb_root(rcdb), None)?;
+            let text = hyt_core::sheet::export(&ws, &table)?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
+                    println!("Wrote {} as {}", table, path.display());
+                }
+                None => print!("{text}"),
+            }
+        }
+        CsvAction::Import { folder, table, csv, out, rcdb } => {
+            let mut ws = Workspace::open(&folder, &rcdb_root(rcdb), None)?;
+            let text = std::fs::read_to_string(&csv).with_context(|| format!("reading {}", csv.display()))?;
+            let report = hyt_core::sheet::import(&mut ws, &table, &text)?;
+            for e in &report.errors {
+                eprintln!("  refused: {e}");
+            }
+            if !ws.has_changes() {
+                println!("No changes; nothing saved.");
+                return Ok(());
+            }
+            for c in hyt_core::tables::change_list(&ws) {
+                println!("  {}: {} {} -> {}", c.place, c.setting, c.old, c.new);
+            }
+            ws.save_as(&out)?;
+            println!(
+                "Saved {} changed values and {} new records into {} ({} refused). Check with `hyt diff`, then `hyt write --from`.",
+                report.changed,
+                report.added,
+                out.display(),
+                report.errors.len()
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Subcommand)]
@@ -494,6 +582,7 @@ fn main() -> Result<()> {
         }
         Command::Rcdb { action } => rcdb_command(action)?,
         Command::Tpl { action } => tpl_command(action)?,
+        Command::Csv { action } => csv_command(action)?,
         Command::Write { port, from, backup, rcdb, allow_unverified } => {
             write_command(&port, &from, &backup, &rcdb_root(rcdb), allow_unverified)?;
         }

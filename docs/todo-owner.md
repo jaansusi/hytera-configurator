@@ -33,6 +33,9 @@ How to record: `docs/capture-howto.md`. Each recording is a CPS read + one chang
 - [ ] **Frequency limits by model (open question 5d)**: in CPS, type 399.995 and 470.005 MHz into a channel's RX
   frequency (both should be refused; 400.000 and 470.000 accepted), and check that "In Call TX Admit" has no
   "Always Allow". The app now enforces these limits from CPS's model-number rules.
+- [ ] **CPS templates (open question 13)**: `hyt tpl export <folder> --out x.tpl --name "hyt test"`, then
+  import `x.tpl` into CPS's template library and open it (also try an export of an imported template). Check
+  CPS's Radio Information page for it (hyt leaves that file empty, as on the radio).
 - [ ] **One CPS screenshot** of the digital channel table showing the "TX Contact" and "RX Group List" columns
   (open question 5b: confirms how the app names them).
 
