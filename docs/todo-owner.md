@@ -7,7 +7,7 @@ Tick items off here (or delete them) as we go through them.
 
 - [ ] **Try the app** (`cargo run -p hyt-gui -- captures/unattended_2026-11-19/start`, or the release build
   `target/release/hyt-gui.exe`). Screenshots of everything new are in `captures/gui-screens_2026-11-19/` and
-  `captures/gui-screens_2026-11-20/`. Say what is confusing or missing.
+  `captures/gui-screens_2026-11-19-night/`. Say what is confusing or missing.
 - [ ] **Safe trial mode**: `HYT_GUI_SIM=<any saved folder>` adds "Simulated radio" as a port, so reads and
   writes can be tried without the radio (it even restarts after a write like the BP515).
 - [ ] **Radio log of the night**: `captures/unattended_2026-11-19/log.md` lists every read/write I did and what

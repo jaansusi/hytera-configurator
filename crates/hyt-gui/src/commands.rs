@@ -223,6 +223,15 @@ pub fn add_channel(state: State<'_, AppState>, kind: ChannelKind) -> CmdResult<(
     })
 }
 
+/// Append a copy of channel `position`; returns the overview and the new row's position.
+#[tauri::command]
+pub fn duplicate_channel(state: State<'_, AppState>, kind: ChannelKind, position: usize) -> CmdResult<(Overview, usize)> {
+    state.with_ws(|ws| {
+        let new = ws.duplicate_channel(kind, position)?;
+        Ok((overview(ws), new))
+    })
+}
+
 #[tauri::command]
 pub fn remove_channel(state: State<'_, AppState>, kind: ChannelKind, position: usize) -> CmdResult<Overview> {
     state.with_ws(|ws| {

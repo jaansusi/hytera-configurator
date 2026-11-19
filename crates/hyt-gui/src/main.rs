@@ -57,6 +57,7 @@ fn main() {
             commands::get_changes,
             commands::add_channel,
             commands::remove_channel,
+            commands::duplicate_channel,
             commands::get_channel_options,
             commands::get_settings_index,
             commands::get_settings_topic,

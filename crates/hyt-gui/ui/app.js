@@ -276,6 +276,7 @@ function renderContent() {
   const selectedRow = state.selected != null ? t.rows[state.selected] : null;
   const actions = t.resizable ? h('span', { class: 'actions' },
     h('button', { onclick: () => onAddChannel(kind), disabled: t.rows.length >= t.capacity }, 'Add channel'),
+    h('button', { onclick: () => onDuplicateChannel(kind, selectedRow), disabled: !selectedRow || t.rows.length >= t.capacity, title: selectedRow ? 'Add a copy of the selected channel' : 'Select a channel first' }, 'Duplicate'),
     h('button', { class: 'danger', onclick: () => onRemoveChannel(kind, selectedRow), disabled: !selectedRow, title: selectedRow ? null : 'Select a channel first' }, 'Remove channel')) : null;
   const head = h('div', { class: 'view-head' },
     h('h1', {}, t.title),
@@ -555,6 +556,15 @@ async function onOpen() {
 
 async function onAddChannel(kind) {
   const result = await act('add_channel', { kind }, `Added a ${kind} channel from CPS's channel template; rename it and set its frequencies`);
+  if (result) {
+    state.selected = result[1];
+    await refresh();
+  }
+}
+
+async function onDuplicateChannel(kind, row) {
+  if (!row) return;
+  const result = await act('duplicate_channel', { kind, position: row.no - 1 }, `Added a copy of "${row.cells[0].text}"; rename it to tell them apart`);
   if (result) {
     state.selected = result[1];
     await refresh();

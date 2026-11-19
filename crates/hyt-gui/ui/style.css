@@ -274,3 +274,7 @@ dialog ul.refused { max-height: 220px; overflow: auto; margin: 6px 0; padding: 6
 dialog ul.refused li { margin: 2px 0; word-break: break-word; }
 dialog pre { white-space: pre-wrap; word-break: break-word; background: var(--head); padding: 8px; border-radius: 6px; max-height: 240px; overflow: auto; }
 code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; }
+
+/* Keep the table header on one line; let it wrap as a whole on narrow windows. */
+.view-head { flex-wrap: wrap; row-gap: 6px; }
+.view-head h1, .view-head .actions button { white-space: nowrap; }
