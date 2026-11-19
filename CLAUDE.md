@@ -41,8 +41,8 @@ on **COM3** (Prolific PL2303GC cable). Reference software: Hytera CPS V1.5.24.00
   channel references (scan/roam lists, designated/priority/revert/power-on/stun channel, presets) would be
   affected, and refuses removing other record kinds. **Done live 2026-11-19**: `HYT Test 4` removed, Zone 1
   member dropped automatically, verified by read-back (`captures/remove-hyt-test-4_2026-11-19/`).
-- Radio state now: digital `HYT Test 1`, `HYT Test 2`; analog `446.13125`, `446.18125`; Zone 1 = Digital 1,
-  Analog 1, Analog 2; contact `Call 1`.
+- Radio state: see the end of `captures/unattended_2026-11-19/log.md` (every read/write of the unattended
+  night 2026-11-19, done with the owner's permission; the starting configuration is written back at the end).
 - Phase 5 GUI milestone 1 built (2026-11-19, awaiting the owner's review): code shared by CLI and GUI moved into
   `crates/hyt-core` (CLI unchanged in use); `crates/hyt-gui` (Tauri 2) opens a saved folder or reads the radio,
   shows digital/analog channels, zones (members by channel alias) and contacts with CPS's labels/units, edits
@@ -59,12 +59,23 @@ on **COM3** (Prolific PL2303GC cable). Reference software: Hytera CPS V1.5.24.00
   mapping inferred, `hyt-core/src/refs.rs`). The GUI's add-channel + zone-member and
   remove-channel reproduce CPS's recorded files byte for byte (`tests/workspace_structure.rs`). `Workspace`
   keeps an edit form (for `apply_edits`) and a decoded view of the result. Not offered: adding/removing zones and
-  contacts (not recorded from CPS).
-- GUI "More ▾" menu (2026-11-20, offline only): CSV export/import of the table shown (pending changes + summary
+  contacts (not recorded from CPS). **Written live 2026-11-19 night** (GUI on COM3): channel `HYT Test 3` added +
+  put in Zone 1, TX contact by name, radio alias and keypad tone from the settings view; verified by read-back
+  and a separate read.
+- Unattended night 2026-11-19 (branch `unattended-2026-11-19`, see `docs/cps-features.md` for the CPS feature
+  inventory and `docs/todo-owner.md` for what needs the owner): simulated radio (`hytera-proto/src/sim.rs`,
+  GUI `HYT_GUI_SIM`) and clearer failure messages; atomic folder saves; settings view (every single-record
+  setting CPS shows, 17 topics, search; `ui.json` from the export script); list editors (RX group/scan/roam and 10
+  other lists, values only); model-number ranges (U1: 400–470 MHz) and visibility; references and dependency
+  rules from CPS's own config/database; programming date stamped on write like CPS (byte-identical);
+  `hyt rcdb status|import` (work from a copy of CPS's data); `hyt csv` + GUI CSV import/export; CPS `.tpl`
+  import/export (`hyt tpl`, GUI); duplicate channel; duplicate contacts refused like CPS. Live: CLI write of a
+  scan-list alias and a quick message made via `hyt csv`, verified.
+- GUI "More ▾" menu (2026-11-19 night, offline only): CSV export/import of the table shown (pending changes + summary
   of refused cells) and CPS template export (what is shown, unsaved changes included) / import (for the open
   folder's radio, into a new folder that is then opened; warnings shown). Banner shows `model_note`.
-- Next: owner review of GUI milestones 1 and 2. Later: recordings of deleting a contact / zone / scan-listed
-  channel.
+- Next: owner review (`docs/todo-owner.md`); CPS recordings for zone/contact/list-member add/remove and
+  referenced-channel removal; merge branch `unattended-2026-11-19` after review.
 
 ## Code
 
