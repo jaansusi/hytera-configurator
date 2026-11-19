@@ -41,7 +41,7 @@ fn temp(name: &str) -> PathBuf {
 }
 
 fn fast() -> WriteSettings {
-    WriteSettings { allow_unverified: false, restart_pause: Duration::ZERO, restart_attempts: 5 }
+    WriteSettings { allow_unverified: false, restart_pause: Duration::ZERO, restart_attempts: 5, programming_date: Some("2030-01-02".into()) }
 }
 
 /// Frames a full read takes, so faults can be placed after the backup.
@@ -88,6 +88,12 @@ fn a_write_to_the_simulated_radio_is_verified_after_its_restart() {
     assert_eq!(events.last().unwrap(), "verified 55");
     assert_eq!(radio.written.len(), 55);
     assert_eq!(Some(&radio.files[&3]), prepare_for_write(&saved.files[&3]).as_ref());
+    // The programming date is stamped like CPS does; the saved folder itself is unchanged.
+    let layout = fx.rcdb.layout("V1.5.24.000").unwrap();
+    let basic = hytera_codeplug::decode::decode(&radio.files[&18], "Comm_Basic", &layout).unwrap();
+    let stamped = basic.blocks.iter().flat_map(|b| &b.records).filter_map(|r| r.fields.as_ref()).find_map(|f| f.0.get("Programming Time").cloned());
+    assert_eq!(stamped, Some(serde_json::json!("2030-01-02")));
+    assert_eq!(load_read(&saved_dir("ok-edit")).unwrap().files[&18], saved.files[&18]);
     // The backup is the radio's configuration before the write.
     assert_eq!(load_read(&backup).unwrap().files, fx.saved.files);
     for d in [&backup, &saved_dir("ok-edit")] {

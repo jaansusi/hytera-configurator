@@ -425,7 +425,8 @@ fn write_command(port: &str, from: &Path, backup: &Path, rcdb: &RcdbRoot, allow_
     println!("Taking a fresh backup into {} ...", backup.display());
     let source = from.display().to_string();
     let job = WriteJob { saved: &saved, source: &source, backup, port };
-    let settings = WriteSettings { allow_unverified, ..WriteSettings::default() };
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let settings = WriteSettings { allow_unverified, programming_date: Some(today), ..WriteSettings::default() };
     write_config(&mut session, rcdb, &job, &settings, |event| match event {
         WriteEvent::Writing { files, differing } => {
             println!("Writing {files} files ({differing} differ from the radio's current contents) ...")

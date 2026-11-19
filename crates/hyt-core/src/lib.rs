@@ -349,6 +349,30 @@ pub fn save_edited(base: &SavedRead, files: &BTreeMap<u16, Vec<u8>>, out: &Path,
     Ok(manifest)
 }
 
+/// Set `Comm_Basic`'s `Programming Time` (ASCII `YYYY-MM-DD`) to `date`, as CPS does on every write
+/// (observed: docs/protocol.md, info item 0xFFF6). Returns whether the file had the field.
+pub fn stamp_programming_date(saved: &SavedRead, files: &mut BTreeMap<u16, Vec<u8>>, layout: &Layout, date: &str) -> Result<bool> {
+    let Some(entry) = saved.manifest.files.iter().find(|f| f.name == "Comm_Basic") else { return Ok(false) };
+    let Some(bytes) = files.get(&entry.id) else { return Ok(false) };
+    let mut decoded = decode(bytes, &entry.name, layout)?;
+    let mut found = false;
+    for b in &mut decoded.blocks {
+        for r in &mut b.records {
+            if let Some(f) = &mut r.fields
+                && f.0.contains_key("Programming Time")
+            {
+                f.0.insert("Programming Time".into(), serde_json::Value::String(date.to_string()));
+                found = true;
+            }
+        }
+    }
+    if found {
+        let stamped = hytera_codeplug::decode::apply(bytes, &decoded, layout)?;
+        files.insert(entry.id, stamped);
+    }
+    Ok(found)
+}
+
 /// Files to write, in CPS's order, each prepared with [`prepare_for_write`].
 pub fn plan_write(
     files: &BTreeMap<u16, Vec<u8>>,

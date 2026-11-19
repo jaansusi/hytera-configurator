@@ -21,13 +21,15 @@ pub struct WriteSettings {
     pub restart_pause: Duration,
     /// Read-back attempts before giving up.
     pub restart_attempts: u32,
+    /// Stamp this date (`YYYY-MM-DD`) as the programming date, as CPS does on every write.
+    pub programming_date: Option<String>,
 }
 
 impl Default for WriteSettings {
     fn default() -> Self {
         // The BP515 stops answering for a few seconds after a write (observed 2026-11-18, most
         // likely a restart); 10 × 3 s covered it with a wide margin.
-        WriteSettings { allow_unverified: false, restart_pause: Duration::from_secs(3), restart_attempts: 10 }
+        WriteSettings { allow_unverified: false, restart_pause: Duration::from_secs(3), restart_attempts: 10, programming_date: None }
     }
 }
 
@@ -122,7 +124,12 @@ pub fn write_config<T: Transport>(
 
     let list = rcdb.file_list(&current.rcdb_version)?;
     let links = rcdb.table_links()?;
-    let plan = plan_write(&saved.files, &list, &links, profile)?;
+    let mut files = saved.files.clone();
+    if let Some(date) = &settings.programming_date {
+        let layout = rcdb.layout(&current.rcdb_version)?;
+        crate::stamp_programming_date(saved, &mut files, &layout, date)?;
+    }
+    let plan = plan_write(&files, &list, &links, profile)?;
     let differing = plan
         .iter()
         .filter(|(e, bytes)| {

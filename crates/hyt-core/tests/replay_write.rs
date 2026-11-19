@@ -75,3 +75,25 @@ fn preparing_our_read_reproduces_cps_files() {
     // 18: CPS stamps the programming date; 80: CPS rewrites 5 bytes of the first RX group record.
     assert_eq!(differing, BTreeSet::from([18, 80]));
 }
+
+#[test]
+fn stamping_the_programming_date_reproduces_cps_file_18() {
+    let Some(fx) = fixtures() else { return };
+    let saved = load_read(&fx.our_read).unwrap();
+    let layout = fx.rcdb.layout(RCDB_VERSION).unwrap();
+    let cps18 = hytera_codeplug::decode::decode(&fx.cps_written[&18], "Comm_Basic", &layout).unwrap();
+    let date = cps18
+        .blocks
+        .iter()
+        .flat_map(|b| &b.records)
+        .filter_map(|r| r.fields.as_ref())
+        .find_map(|f| f.0.get("Programming Time").and_then(|v| v.as_str()).map(str::to_string))
+        .unwrap();
+    let mut files = saved.files.clone();
+    assert!(hyt_core::stamp_programming_date(&saved, &mut files, &layout, &date).unwrap());
+    let list = fx.rcdb.file_list(RCDB_VERSION).unwrap();
+    let links = fx.rcdb.table_links().unwrap();
+    let plan = plan_write(&files, &list, &links, &BP515).unwrap();
+    let file18 = &plan.iter().find(|(e, _)| e.id == 18).unwrap().1;
+    assert!(file18 == &fx.cps_written[&18], "stamped file 18 differs from CPS's (date {date})");
+}

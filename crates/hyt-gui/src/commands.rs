@@ -420,7 +420,11 @@ pub async fn write_radio(
             let mut session = Session::new(transport);
             let source = folder.display().to_string();
             let job = WriteJob { saved: &saved, source: &source, backup: &backup, port: &label };
-            let report = write_config(&mut session, &state.rcdb(), &job, &WriteSettings::default(), |event| match event {
+            let settings = WriteSettings {
+                programming_date: Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
+                ..WriteSettings::default()
+            };
+            let report = write_config(&mut session, &state.rcdb(), &job, &settings, |event| match event {
                 WriteEvent::BackupFile { done, total, entry } => {
                     emit(&app, "write", format!("Backup: reading {}", entry.name), done, total)
                 }
