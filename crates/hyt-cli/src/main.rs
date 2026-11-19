@@ -109,6 +109,11 @@ enum Command {
         #[command(subcommand)]
         action: RcdbAction,
     },
+    /// CPS template files (.tpl): show one, import one for a radio, export a folder for CPS.
+    Tpl {
+        #[command(subcommand)]
+        action: TplAction,
+    },
     /// Write a folder saved by `hyt read` back to the radio. Takes a fresh backup first, refuses a
     /// different radio, and reads back afterwards to verify.
     Write {
@@ -137,6 +142,127 @@ enum RcdbAction {
     /// per-user data folder. FROM is a CPS install folder or a copy of one, or a copied `hyt/rcdb`
     /// data folder.
     Import { from: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum TplAction {
+    /// Show a template's header and the radio files it holds.
+    Info { file: PathBuf },
+    /// Save a template's radio files as a new folder for `hyt write`, taking the radio identity
+    /// from a read of the target radio. Refuses a template for another model or RCDB version;
+    /// files the template lacks are kept from the read.
+    Import {
+        file: PathBuf,
+        /// A folder read from the radio the template is meant for (`hyt read`).
+        #[arg(long)]
+        like: PathBuf,
+        /// New folder for the result.
+        #[arg(short, long)]
+        out: PathBuf,
+    },
+    /// Save a folder (read, edited or imported) as a template file that CPS can open.
+    Export {
+        folder: PathBuf,
+        /// New template file (.tpl).
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Template name shown in CPS (default: the imported template's name, else the folder name).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// A CPS template of the same RCDB version to take CPS's file descriptions from (default:
+        /// one from the CPS install's Templates folder).
+        #[arg(long)]
+        seqo_from: Option<PathBuf>,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
+    },
+}
+
+fn tpl_command(action: TplAction) -> Result<()> {
+    use hyt_core::tpl;
+    match action {
+        TplAction::Info { file } => {
+            let t = tpl::Template::read(&file)?;
+            let h = &t.header;
+            let show = |label: &str, v: &Option<String>| println!("{label:<14} {}", v.as_deref().unwrap_or("-"));
+            show("Name", &h.name);
+            show("Description", &h.description);
+            show("Product", &h.product);
+            show("Model number", &h.model_number);
+            show("RCDB version", &h.rcdb_version);
+            show("Serial number", &h.serial_number);
+            show("Created", &h.created_time);
+            show("Guid", &h.guid);
+            let files = t.files()?;
+            println!("{} radio files:", files.len());
+            for (f, e) in files.iter().zip(&t.entries) {
+                let extra: Vec<&str> = e.files.iter().map(|(n, _)| n.as_str()).filter(|n| *n != e.name).collect();
+                let with = if extra.is_empty() { String::new() } else { format!("  (+ {})", extra.join(", ")) };
+                println!("  {:>3} {:<28} {:>6} bytes{with}", f.id, f.name, f.bytes.len());
+            }
+            for w in t.warnings() {
+                println!("warning: {w}");
+            }
+        }
+        TplAction::Import { file, like, out } => {
+            let t = tpl::Template::read(&file)?;
+            let reference = load_read(&like)?;
+            let name = t.header.name.clone().unwrap_or_default();
+            let source = format!("CPS template {} (\"{name}\")", file.display());
+            let report = tpl::import(&t, &reference, &out, &source)?;
+            for w in &report.warnings {
+                println!("warning: {w}");
+            }
+            for (id, n) in &report.kept_from_reference {
+                println!("not in the template, kept from {}: {id} {n}", like.display());
+            }
+            for (id, n) in &report.ignored {
+                println!("not a file of this radio, ignored: {id} {n}");
+            }
+            println!(
+                "Imported {} files from template \"{name}\" into {} for radio {} ({}). Check with `hyt diff {} {}`.",
+                report.from_template,
+                out.display(),
+                reference.manifest.serial_number.as_deref().unwrap_or("?"),
+                reference.manifest.model_name.as_deref().unwrap_or("?"),
+                like.display(),
+                out.display()
+            );
+        }
+        TplAction::Export { folder, out, name, description, seqo_from, rcdb } => {
+            let rcdb = rcdb_root(rcdb);
+            let links = rcdb.table_links()?;
+            let saved = load_read(&folder)?;
+            let seqo = match seqo_from {
+                Some(p) => Some(tpl::Template::read(&p)?),
+                None => [rcdb.path().join("Templates"), Path::new(hytera_codeplug::rcdb::DEFAULT_CPS_DATA_DIR).join("Templates")]
+                    .iter()
+                    .find_map(|d| tpl::find_template(d, &saved.manifest.rcdb_version, saved.manifest.model_name.as_deref())),
+            };
+            let default_name = folder.file_name().map_or_else(|| "hyt".to_string(), |n| n.to_string_lossy().into_owned());
+            let opts = tpl::ExportOptions {
+                name,
+                default_name,
+                description,
+                sidecar: None,
+                seqo_from: seqo.as_ref(),
+                when: tpl::now(),
+            };
+            let (t, report) = tpl::export(&folder, &out, &links, opts)?;
+            for w in &report.warnings {
+                println!("warning: {w}");
+            }
+            println!(
+                "Exported {} files as template \"{}\" to {}. In CPS, import it into the template library.",
+                report.files,
+                t.header.name.as_deref().unwrap_or(""),
+                out.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// The RCDB data folder: as given (or `HYT_RCDB`), else the CPS install, else the per-user copy.
@@ -363,6 +489,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Rcdb { action } => rcdb_command(action)?,
+        Command::Tpl { action } => tpl_command(action)?,
         Command::Write { port, from, backup, rcdb, allow_unverified } => {
             write_command(&port, &from, &backup, &rcdb_root(rcdb), allow_unverified)?;
         }
