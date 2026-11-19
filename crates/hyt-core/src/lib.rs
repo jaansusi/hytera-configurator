@@ -17,6 +17,7 @@ use anyhow::{Context, Result, bail};
 use hytera_codeplug::container::{CrcCheck, FileHeader, check_crc, prepare_for_write};
 use hytera_codeplug::decode::{DecodedFile, decode};
 use hytera_codeplug::layout::Layout;
+use hytera_codeplug::models::ModelRules;
 use hytera_codeplug::options::Options;
 use hytera_codeplug::rcdb::{FileEntry, RcdbRoot, TableLink, write_order};
 use hytera_models::{ModelProfile, profile_for};
@@ -271,6 +272,44 @@ pub fn load_options(explicit: Option<&Path>, version: &str) -> std::result::Resu
         Ok(o) if o.rcdb_version == version => Ok(o),
         Ok(o) => Err(format!("{} is for RCDB {}, not {version}", path.display(), o.rcdb_version)),
         Err(e) => Err(format!("no option catalogue ({e}); run tools/export-rcdb-options.ps1")),
+    }
+}
+
+/// The radio's model number (info item 0x0000, e.g. `55P10B00-1L0BAPU1U1…`) saved with a read.
+pub fn model_number(manifest: &ReadManifest) -> Option<&str> {
+    manifest
+        .info
+        .iter()
+        .find(|i| i.item == "0x0000" && i.status == 0)
+        .and_then(|i| i.text.as_deref())
+        .filter(|t| !t.trim().is_empty())
+}
+
+/// [`load_options`] for a saved read, narrowed to its radio's model number with CPS's model-number
+/// rules (`models.json` next to the catalogue; see `hytera_codeplug::models`), so out-of-band
+/// values are refused like CPS does. The note says why the generic ranges are used instead, when
+/// the rules or the model number are missing.
+pub fn load_options_for_read(
+    explicit: Option<&Path>,
+    manifest: &ReadManifest,
+) -> std::result::Result<(Options, Option<String>), String> {
+    let version = &manifest.rcdb_version;
+    let options = load_options(explicit, version)?;
+    let generic = |why: String| format!("{why}; using CPS's generic value ranges, not this model's");
+    let Some(model) = model_number(manifest) else {
+        return Ok((options, Some(generic("the read has no model number (info item 0x0000)".into()))));
+    };
+    let path = match explicit {
+        Some(p) => Some(p.with_file_name("models.json")),
+        None => ModelRules::default_path(version),
+    };
+    let Some(path) = path else {
+        return Ok((options, Some(generic("no per-user data folder for the model-number rules".into()))));
+    };
+    match ModelRules::load(&path) {
+        Ok(rules) if rules.rcdb_version == *version => Ok((options.for_model(&rules, model), None)),
+        Ok(rules) => Ok((options, Some(generic(format!("{} is for RCDB {}", path.display(), rules.rcdb_version))))),
+        Err(e) => Ok((options, Some(generic(format!("no model-number rules ({e}); run tools/export-rcdb-options.ps1"))))),
     }
 }
 

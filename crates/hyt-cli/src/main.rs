@@ -133,7 +133,7 @@ enum Command {
 enum RcdbAction {
     /// Show which RCDB data and option catalogues hyt uses.
     Status,
-    /// Copy the RCDB folders (and exported options.json / ui.json, if the source has them) into the
+    /// Copy the RCDB folders (and exported options.json / ui.json / models.json, if the source has them) into the
     /// per-user data folder. FROM is a CPS install folder or a copy of one, or a copied `hyt/rcdb`
     /// data folder.
     Import { from: PathBuf },
@@ -163,10 +163,15 @@ fn rcdb_command(action: RcdbAction) -> Result<()> {
             let mut any = false;
             for v in &found {
                 let has = |f: &str| data.join(v).join(f).is_file();
-                if has("options.json") || has("ui.json") {
+                if has("options.json") || has("ui.json") || has("models.json") {
                     any = true;
                     let yn = |b: bool| if b { "yes" } else { "no" };
-                    println!("  {v}: options.json {}, ui.json {}", yn(has("options.json")), yn(has("ui.json")));
+                    println!(
+                        "  {v}: options.json {}, ui.json {}, models.json {}",
+                        yn(has("options.json")),
+                        yn(has("ui.json")),
+                        yn(has("models.json"))
+                    );
                 }
             }
             if !any {
@@ -182,10 +187,10 @@ fn rcdb_command(action: RcdbAction) -> Result<()> {
                 println!("Copied {n} RCDB files from {} to {}", src.display(), dst.display());
                 copied += n;
             }
-            // Exported catalogues: <from>/<version>/{options,ui}.json (a copied hyt/rcdb folder).
+            // Exported catalogues: <from>/<version>/{options,ui,models}.json (a copied hyt/rcdb folder).
             for entry in std::fs::read_dir(&from).with_context(|| format!("reading {}", from.display()))?.flatten() {
                 let dir = entry.path();
-                for f in ["options.json", "ui.json"] {
+                for f in ["options.json", "ui.json", "models.json"] {
                     if dir.join(f).is_file() && dir != data.join(entry.file_name()) {
                         std::fs::create_dir_all(data.join(entry.file_name()))?;
                         std::fs::copy(dir.join(f), data.join(entry.file_name()).join(f))?;
@@ -293,7 +298,7 @@ fn main() -> Result<()> {
             let rcdb = rcdb_root(rcdb);
             let layout = load_layout(&saved, &rcdb)?;
             let links = rcdb.table_links()?;
-            let options = load_options(options, &saved.manifest.rcdb_version);
+            let options = load_options_for_read(options, &saved.manifest);
             let text = std::fs::read_to_string(&edits).with_context(|| format!("reading {}", edits.display()))?;
             let edited: Vec<DecodedFile> =
                 serde_json::from_str(&text).with_context(|| format!("parsing {}", edits.display()))?;
@@ -314,7 +319,7 @@ fn main() -> Result<()> {
                 bail!("the folders have different RCDB versions ({} vs {})", a.manifest.rcdb_version, b.manifest.rcdb_version);
             }
             let layout = load_layout(&a, &rcdb_root(rcdb))?;
-            let options = load_options(options, &a.manifest.rcdb_version);
+            let options = load_options_for_read(options, &a.manifest);
             let (da, db) = (decode_read(&a, &layout)?, decode_read(&b, &layout)?);
             let mut all = Vec::new();
             for fa in &da {
@@ -335,7 +340,7 @@ fn main() -> Result<()> {
             let layout = load_layout(&saved, &rcdb_root(rcdb))?;
             let mut decoded = decode_read(&saved, &layout)?;
             if labels {
-                match load_options(options, &saved.manifest.rcdb_version) {
+                match load_options_for_read(options, &saved.manifest) {
                     Some(o) => labelize(&mut decoded, &layout, &o),
                     None => bail!("--labels needs the option catalogue (run tools/export-rcdb-options.ps1)"),
                 }
@@ -353,8 +358,7 @@ fn main() -> Result<()> {
             let saved = load_read(&folder)?;
             let layout = load_layout(&saved, &rcdb_root(rcdb))?;
             let decoded = decode_read(&saved, &layout)?;
-            let version = &saved.manifest.rcdb_version;
-            let options = load_options(options, version);
+            let options = load_options_for_read(options, &saved.manifest);
             let labels = Labeler { layout: &layout, options: options.as_ref() };
             if all {
                 print!("{}", full_listing(&decoded, &labels));
@@ -403,11 +407,17 @@ fn print_changes(changes: &[Change], labels: &Labeler) {
     }
 }
 
-/// Load the option catalogue from `explicit` or the default per-user location; note and continue
-/// without labels if it is missing or for another RCDB version.
-fn load_options(explicit: Option<PathBuf>, version: &str) -> Option<Options> {
-    match hyt_core::load_options(explicit.as_deref(), version) {
-        Ok(o) => Some(o),
+/// Load the option catalogue from `explicit` or the default per-user location, narrowed to the
+/// saved radio's model number (CPS's model-number rules). Notes and continues without labels if the
+/// catalogue is missing or for another RCDB version, and with the generic ranges if the rules are.
+fn load_options_for_read(explicit: Option<PathBuf>, manifest: &hyt_core::ReadManifest) -> Option<Options> {
+    match hyt_core::load_options_for_read(explicit.as_deref(), manifest) {
+        Ok((o, note)) => {
+            if let Some(note) = note {
+                eprintln!("note: {note}");
+            }
+            Some(o)
+        }
         Err(note) => {
             eprintln!("note: {note}; showing raw values");
             None

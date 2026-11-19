@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 
 use crate::edit::{Change, Edited, apply_edits, def_for, is_text};
 use crate::view::{Labeler, is_secret};
-use crate::{ReadManifest, SavedRead, decode_read, load_options, load_read, save_edited};
+use crate::{ReadManifest, SavedRead, decode_read, load_options_for_read, load_read, save_edited};
 
 /// Where one field value lives in the decoded files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +185,8 @@ pub struct Workspace {
     pub options: Option<Options>,
     /// Why no option catalogue is loaded, when it is not.
     pub options_note: Option<String>,
+    /// Why the catalogue is not narrowed to the radio's model number (generic ranges), when it is not.
+    pub model_note: Option<String>,
     /// CPS's screen structure (`ui.json` next to the option catalogue), for the settings view.
     pub ui: Option<hytera_codeplug::ui::UiTree>,
     links: Vec<TableLink>,
@@ -203,9 +205,9 @@ impl Workspace {
         let version = saved.manifest.rcdb_version.clone();
         let layout = crate::load_layout(&saved, rcdb)?;
         let links = rcdb.table_links().context("loading TableLink.xml")?;
-        let (options, options_note) = match load_options(options_path, &version) {
-            Ok(o) => (Some(o), None),
-            Err(note) => (None, Some(note)),
+        let (options, options_note, model_note) = match load_options_for_read(options_path, &saved.manifest) {
+            Ok((o, model_note)) => (Some(o), None, model_note),
+            Err(note) => (None, Some(note), None),
         };
         let base = decode_read(&saved, &layout)?;
         let ui_path = match options_path {
@@ -219,6 +221,7 @@ impl Workspace {
             layout,
             options,
             options_note,
+            model_note,
             ui,
             links,
             working: base.clone(),

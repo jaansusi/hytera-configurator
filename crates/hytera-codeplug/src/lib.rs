@@ -3,6 +3,7 @@
 pub mod container;
 pub mod decode;
 pub mod layout;
+pub mod models;
 pub mod options;
 pub mod rcdb;
 pub mod structure;

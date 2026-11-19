@@ -81,6 +81,60 @@ position.
 `%LOCALAPPDATA%\hyt\rcdb\<version>\options.json` (portable JSON, Hytera data: never in the repository). `hyt show`
 loads it (`hytera-codeplug/src/options.rs`).
 
+## 2b. Model-number rules (ranges, defaults, visibility by model)
+
+CPS narrows the generic options of 2a by the radio's **model number**: info item `0x0000` ("model code"), e.g.
+the BP515's `55P10B00-1L0BAPU1U100000000CB000000000000-00000NN0000000000000000000000000-00040000` (observed in
+every `manifest.json`; CPS's own `ModelNumber.csv` lists 49 sample models in the same format, e.g. `BP510 U1` =
+`50P10B00-1L0BAPU1U1…`). Model name (0x0011) and product type (0xFFF0) play no part in these rules (inferred: the
+conditions only index model-number characters).
+
+**Positions** (observed, CPS's `XML Model Number Rule.xml`): 1-based character positions in the model number
+**without the `-` separators** (8 + 32 + 32 + 8 = 80 characters). Relevant ones: 1 level/series (`5`), 2 sales
+region (`5` = EMEA), 3 type (`P` = portable), 4 "ID" (display/keypad), 14 NB protocol standard (`P` = "QEU",
+`D` = "ENS", `T` = "TFTSB"), 15–16 hardware band, **17–18 "flash burned" band** (`U1` = 400–470 MHz, `U3`/`U9` =
+350–400, `V1` = 136–174, `Ux` = 350–527, `B1` = 446 MHz, …), 19 display, 20 GPS module, 21 Bluetooth, 70
+customization. That the SDF's `start_index` uses the same numbering is inferred from the data: positions 1/2/4/6
+hold values that only fit that way, 17 (length 2) holds band codes, 21 holds the Bluetooth `A` of the `… BT`
+models in `ModelNumber.csv`.
+
+**Tables** (observed, `XMLToolCompactData.sdf`; `param_id` = `Param.param_id`, not the layout id):
+
+| Table | Rows | Content |
+|---|---|---|
+| `ModelNumberMainGroup` | 1,070 | Conditions: `model_number_group_id`, `start_index`, `length`, `value` (comma-separated, trailing comma, e.g. `U1,` or `P,D,`), `param_id` (the same for all rows of a group); `link_type` always 0 |
+| `ModelNumberRangeGroupLink` | 2,054 per language | `default_group_id` → allowed values for `param_id`: same `range_value` text and `Index` order as `DefaultRangeValue`; `prefix` always empty |
+| `ModelNumberDefaultGroupLink` | 346 | Default per group and parameter (`default_en`), e.g. `429075000` for RX/TX frequency on U1, `400-470` for Comm_Basic "Frequency Range" |
+| `ModelNumberVisibleGroupLink` | 379 | `is_visible` 0/1 per group and parameter |
+| `ModelNumberEnableGroupLink`, `ModelNumberDescription`, `ProductModelNumberList`, `LinkModelNumber` | 0 | empty in this CPS version |
+| `ModelNumberTypeRule` | 1 | `RuleType 0`, `ModelRuleType 0` (inferred: `G2Terminal` in `Config\ModelNumberRuleTypeInfo.xml`, i.e. the "XML" rule file, not the RVM one) |
+| `ModelNumberUIMainGroup` / `ModelNumberUILink` | 125 / 76 | The same kind of conditions for screen parts (`related_linkType`/`link_type` 1 or 2, `relatedUI_id`, `property_value` 0/1). Meaning of the link types **unknown** (the ids fit `UiPage`/`UiGroup`/`UiCategory` inconsistently); exported, not used |
+
+**Matching** (inferred): a group applies when all its conditions hold; its range rows then **replace** the
+parameter's generic options (they repeat the generic entries minus the excluded ones, or give a narrower scale).
+For the BP515 U1, 68 of 586 groups match and no parameter gets more than one range/default/visibility group;
+across the 49 models of `ModelNumber.csv` only the AP320 has an overlap (two visibility rows). `hyt` takes the
+lowest group id then; CPS's rule is unknown.
+
+**What applies to the BP515 U1** (observed in the data; that CPS's screens behave so is inferred, not yet compared):
+
+- RX/TX Frequency of digital (layout ids 7, 8) and analog (84, 85) channels, and four other RX/TX pairs
+  (3299/3300, 3305/3306, 6512/6513, 6568/6569): **400–470 MHz**, step 5 Hz (generic: 350–527 MHz). Default
+  429.075 MHz (the frequency of CPS's channel template). Comm_Basic "Frequency Range" default `400-470`.
+- In Call TX Admit (38): Follow TX Admit / Color Code Free / Priority Interrupt (no "Always Allow").
+- Emergency Type/Mode (1607, 1608, 1623), Software Encrypt Type (1726: Hytera Encrypt only), Contact Switch Type
+  (1727), SK3 Short/Long key functions (6105/6106: 21 of 27).
+- Defaults for 30 parameters (e.g. Language 1033, several tones on) and visibility for 47 (e.g. VOX hidden).
+- Every value in the radio's current configuration lies inside these ranges (`hyt-core/tests/model_ranges.rs`).
+
+`tools/export-rcdb-options.ps1` writes these tables (with layout ids) to `models.json` next to `options.json`
+(Hytera data: never in the repository). `hytera-codeplug/src/models.rs` evaluates them; `Options::for_model` /
+`with_model` narrows the catalogue (a value outside the model's range keeps its label for display but is refused
+by `allows`/`parse_display`); `hyt_core::load_options_for_read` takes the model number from a saved read's
+manifest (used by `Workspace::open` and `hyt apply/show/decode/diff`; without `models.json` or a model number it
+notes this and uses the generic ranges). Defaults and visibility are loaded (`Options::model_default`,
+`model_visible`) but not yet used by the GUI or when adding records.
+
 ## 3. File container (little-endian)
 
 Every file starts with a 20-byte header:
