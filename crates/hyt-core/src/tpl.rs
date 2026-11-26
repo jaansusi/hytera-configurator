@@ -14,12 +14,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, FixedOffset, Local, Timelike};
 use hytera_codeplug::container::{FileHeader, prepare_for_write};
+use hytera_codeplug::layout::Layout;
 use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot, TableLink};
 use hytera_proto::session::item;
 use serde::{Deserialize, Serialize};
 
 use crate::workspace::Workspace;
-use crate::{ReadManifest, SavedRead, load_read, save_with_extras};
+use crate::{ReadManifest, SavedRead, load_config, save_config_with_extras};
 
 /// Name of the template header entry in a `.tpl`.
 pub const TEMPLATE_HEADER: &str = "tpHeader.data";
@@ -407,11 +408,11 @@ pub struct SidecarStore {
 
 /// Read the template file `path` and [`import`] it for the radio read in `like` into the new
 /// folder `out`.
-pub fn import_file(path: &Path, like: &SavedRead, out: &Path) -> Result<(Template, ImportReport)> {
+pub fn import_file(path: &Path, like: &SavedRead, out: &Path, layout: &Layout) -> Result<(Template, ImportReport)> {
     let t = Template::read(path)?;
     let name = t.header.name.clone().unwrap_or_default();
     let source = format!("CPS template {} (\"{name}\")", path.display());
-    let report = import(&t, like, out, &source)?;
+    let report = import(&t, like, out, &source, layout)?;
     Ok((t, report))
 }
 
@@ -419,7 +420,7 @@ pub fn import_file(path: &Path, like: &SavedRead, out: &Path) -> Result<(Templat
 /// (model, serial, RCDB version, info) of `like` (a read of the radio it is meant for), so that
 /// `hyt write` accepts it for that radio. Refuses a template for another RCDB version or model.
 /// Files the template lacks are kept from `like`.
-pub fn import(tpl: &Template, like: &SavedRead, out: &Path, source: &str) -> Result<ImportReport> {
+pub fn import(tpl: &Template, like: &SavedRead, out: &Path, source: &str, layout: &Layout) -> Result<ImportReport> {
     let m = &like.manifest;
     let h = &tpl.header;
     match h.rcdb_version.as_deref() {
@@ -477,7 +478,10 @@ pub fn import(tpl: &Template, like: &SavedRead, out: &Path, source: &str) -> Res
     }
     let sidecar = Sidecar { source: source.to_string(), header: h.clone(), stores };
     let extras = [(SIDECAR, serde_json::to_vec_pretty(&sidecar)?)];
-    save_with_extras(like, &files, out, source, &extras)?;
+    // The template's files (with the reference radio's identity) are this configuration's base, so
+    // bytes outside settings (e.g. unused member slots) stay the template's and export reproduces it.
+    let base = SavedRead { manifest: like.manifest.clone(), files: files.clone(), radio: None };
+    save_config_with_extras(&base, &files, out, source, layout, &extras)?;
     Ok(report)
 }
 
@@ -624,8 +628,8 @@ pub fn entry_order(read_order: &[u16], links: &[TableLink]) -> Vec<u16> {
 
 /// Export the folder `folder` as the template file `out` (which must not exist; written whole or
 /// not at all).
-pub fn export(folder: &Path, out: &Path, links: &[TableLink], opts: ExportOptions) -> Result<(Template, ExportReport)> {
-    let saved = load_read(folder)?;
+pub fn export(folder: &Path, out: &Path, rcdb: &RcdbRoot, links: &[TableLink], opts: ExportOptions) -> Result<(Template, ExportReport)> {
+    let saved = load_config(folder, rcdb)?;
     export_files(&saved.manifest, &saved.files, folder, out, links, opts)
 }
 

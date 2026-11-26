@@ -142,7 +142,13 @@ CPS's names are *observed* in `G2CPS.Protocol.dll`, enum `G2CPS.Protocol.AppProt
    Exact order of items: `0002, 0000, 0011, 0001, 0003, 000A, 000B, FFF0, 0009, FFF6, [001B query], FFF4, 0008,
    0007, 0100, 0045, 0006, 0200, 0065, 0071` (also `CPS_IDENTIFY_SEQUENCE` in `crates/hytera-proto/src/session.rs`).
    Items 7, 8 and 9 answer status 1 (not supported) on the BP515. Transaction IDs start at 1 and keep counting
-   into session 2.
+   into session 2. On an older BP515 (firmware V1.5.13, RCDB V1.5.08.000; observed 2026-11-26, read and write)
+   items `0045`, `0065` and `0100` also answer status 1, and CPS sends **19** queries: it skips `0071` and
+   disconnects after `0065`. `hyt` skips `0071` when `0065` was not supported (`ASK_0071_ONLY_AFTER`; which of
+   the three items CPS checks is inferred). While the radio is in the "programming not finished" power-up error
+   (observed 2026-11-26 after an interrupted write: `Common_DeveloperConfig` State 1, ErrorReason 5), it acknowledges
+   the `001B` query but never answers it; a complete write clears the state and `001B` answers again. `hyt` waits
+   20 s and then continues without it.
 3. Session 2: CONNECT, enter programming (`01F0/0000`), then for each file ID in the RCDB file list: open (`01F0/0006`) and read chunks (`41F8/0008`); then leave (`01F0/0001`) and DISCONNECT.
 4. Close port. A full read of 58 files (about 50 KB) took about 5.7 s.
 

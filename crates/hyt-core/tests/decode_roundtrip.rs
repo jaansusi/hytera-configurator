@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use hyt_core::{decode_read, load_read};
+use hyt_core::{decode_read, load_config_default};
 use hytera_codeplug::decode::apply;
 use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot};
 use hytera_codeplug::structure::{parse, parse_sublist};
@@ -33,17 +33,23 @@ fn scramble(file: &[u8]) -> Vec<u8> {
 fn every_file_round_trips_through_named_fields() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let rcdb_dir = std::env::var_os("HYT_RCDB").map(PathBuf::from).unwrap_or(DEFAULT_CPS_DATA_DIR.into());
-    let folders = ["captures/hyt-read_2026-11-18", "captures/hyt-read-after-write_2026-11-18"];
+    // The last one is an older BP515 (firmware V1.5.13, RCDB V1.5.08.000, 57 files).
+    let folders = [
+        "captures/hyt-read_2026-11-18",
+        "captures/hyt-read-after-write_2026-11-18",
+        "captures/old-bp515-read_2026-11-26",
+    ];
     if !rcdb_dir.is_dir() || folders.iter().any(|f| !root.join(f).is_dir()) {
         eprintln!("skipping: captures or CPS RCDB data not present");
         return;
     }
     let rcdb = RcdbRoot::new(rcdb_dir);
     for folder in folders {
-        let saved = load_read(&root.join(folder)).unwrap();
+        let saved = load_config_default(&root.join(folder)).unwrap();
         let layout = rcdb.layout(&saved.manifest.rcdb_version).unwrap();
         let decoded = decode_read(&saved, &layout).unwrap();
-        assert_eq!(decoded.len(), 58);
+        assert_eq!(decoded.len(), saved.manifest.files.len());
+        assert!(decoded.len() >= 57, "{folder}: only {} files decoded", decoded.len());
         for d in &decoded {
             let original = &saved.files[&d.id];
             let rebuilt = apply(&scramble(original), d, &layout).unwrap();

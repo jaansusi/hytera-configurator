@@ -97,7 +97,7 @@ const READ_ONLY_MODEL: &str = "Not available on this model (CPS's model-number r
 
 /// CPS's model-number overrides for the opened radio, when the rules were exported.
 fn model_overrides(ws: &Workspace) -> Option<hytera_codeplug::models::ModelOverrides> {
-    let version = &ws.manifest().rcdb_version;
+    let version = &crate::data_version(&ws.manifest().rcdb_version);
     let rules = hytera_codeplug::models::ModelRules::load(&hytera_codeplug::models::ModelRules::default_path(version)?).ok()?;
     let model = crate::model_number(ws.manifest())?;
     (rules.rcdb_version == *version).then(|| rules.for_model(model))

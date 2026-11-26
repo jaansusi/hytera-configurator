@@ -25,6 +25,11 @@ const state = {
   showInternal: false, // show (read-only) fields Hytera hides even in CPS
   quick: null,     // quick setup: questions, answers and the step shown (null until opened)
   busy: false,     // a radio operation is running
+  mode: 'edit',    // 'edit' (the open configuration) or 'batch' (Program radios)
+  batch: null,     // open batch (batch_open / batch_create), in batch mode
+  batchForm: null, // the new-batch form's values
+  batchArmed: false, // the user confirmed overwriting the radios programmed in this batch
+  batchLast: null, // the last radio programmed (entry), shown above the log
 };
 
 // ---------- small helpers ----------
@@ -267,6 +272,7 @@ async function refresh() {
 }
 
 async function opened(overview, message) {
+  state.mode = 'edit';
   state.overview = overview;
   state.view = 'digital';
   state.selected = null;
@@ -334,11 +340,14 @@ function renderHeader() {
       h('span', { class: 'folder', title: o.folder }, `‎${o.folder}`),
     );
   }
-  $('btn-save').disabled = !o || state.busy;
-  $('btn-write').disabled = !o || state.busy;
+  const editing = o && state.mode === 'edit';
+  $('btn-save').disabled = !editing || state.busy;
+  $('btn-write').disabled = !editing || state.busy;
+  $('btn-batch').disabled = state.busy;
+  $('btn-batch').classList.toggle('active', state.mode === 'batch');
   $('btn-open').disabled = state.busy;
   $('btn-read').disabled = state.busy;
-  $('btn-more').disabled = !o || state.busy;
+  $('btn-more').disabled = !editing || state.busy;
   if ($('btn-more').disabled) closeMenu();
 
   const banner = $('banner');
@@ -362,6 +371,10 @@ function renderHeader() {
 function renderNav() {
   const nav = $('nav');
   const o = state.overview;
+  if (state.mode === 'batch') {
+    nav.replaceChildren(...(o ? [h('button', { class: 'back', onclick: leaveBatchMode, title: o.folder }, '← Back to the configuration')] : []));
+    return;
+  }
   if (!o) {
     nav.replaceChildren();
     return;
@@ -392,6 +405,10 @@ function renderNav() {
 
 function renderContent() {
   const c = $('content');
+  if (state.mode === 'batch') {
+    c.replaceChildren(renderBatch());
+    return;
+  }
   if (!state.overview) {
     c.replaceChildren(h('div', { class: 'empty' },
       h('h1', {}, 'No configuration open'),
@@ -399,6 +416,7 @@ function renderContent() {
       h('div', { class: 'buttons' },
         h('button', { onclick: onOpen }, 'Open folder…'),
         h('button', { onclick: onRead }, 'Read radio…')),
+      h('p', {}, 'To put one configuration on several radios, use Program radios….'),
     ));
     return;
   }
@@ -531,7 +549,7 @@ function startCellEdit(td, column, cell) {
 
 function renderDetail() {
   const d = $('detail');
-  if (!state.overview || state.view === 'changes' || state.selected == null || !state.table || !state.detail) {
+  if (state.mode === 'batch' || !state.overview || state.view === 'changes' || state.selected == null || !state.table || !state.detail) {
     d.replaceChildren();
     return;
   }
@@ -1222,7 +1240,8 @@ async function onWrite() {
   const summary = $('write-summary');
   summary.replaceChildren(
     h('div', { class: 'kv' },
-      h('span', {}, 'Radio'), h('span', {}, `${o.model || '?'} · serial ${o.serial || '?'} · RCDB ${o.rcdb_version}`),
+      h('span', {}, 'Made from'), h('span', {}, `${o.model || '?'} · serial ${o.serial || '?'} · RCDB ${o.rcdb_version}`),
+      h('span', {}, 'Goes onto'), h('span', {}, `the ${o.model || 'radio'} on the cable. Another radio keeps its own Radio ID and name; other firmware is converted, and the result says what did not carry over.`),
       h('span', {}, 'Configuration'), h('span', {}, o.folder),
       h('span', {}, 'Changes'), h('span', {}, changes.length
         ? `${changes.length} setting${changes.length === 1 ? '' : 's'} changed from the opened folder (listed below)`
@@ -1254,6 +1273,7 @@ async function onWrite() {
     setStatus(`Written and verified: ${r.written} files (${r.differing} changed). Backup in ${r.backup}`, 'ok');
     await ask('Write verified', [
       h('p', {}, `All ${r.written} written files read back as written (${r.differing} differed from what the radio had).`),
+      ...r.notes.map((n) => h('p', {}, n)),
       h('div', { class: 'kv' }, h('span', {}, 'Written from'), h('span', {}, r.folder), h('span', {}, 'Backup before writing'), h('span', {}, r.backup)),
     ], { cancel: false });
   } catch (e) {
@@ -1265,6 +1285,291 @@ async function onWrite() {
       h('p', {}, `If a backup was taken it is in ${backup}. It can be written back with hyt write or this app.`),
     ], { cancel: false });
   }
+}
+
+// ---------- Program radios (batch) ----------
+
+// The port list of the batch screen is kept across renders (its choice and options stay).
+const batchPort = h('select', { 'aria-label': 'Serial port' });
+
+async function enterBatchMode() {
+  if (state.busy) return;
+  if (state.mode === 'batch') return;
+  state.mode = 'batch';
+  if (!state.batch && state.batchForm?.forFolder !== (state.overview?.folder ?? null)) await resetBatchForm();
+  await fillPorts(batchPort);
+  render();
+}
+
+function leaveBatchMode() {
+  state.mode = 'edit';
+  refresh();
+}
+
+async function resetBatchForm() {
+  const o = state.overview;
+  let changes = 0;
+  if (o) changes = o.changes || 0;
+  state.batchForm = {
+    forFolder: o?.folder ?? null,
+    useOpen: !!o,
+    config: '',
+    saveTo: changes ? await invoke('suggest_folder', { kind: 'edited' }) : '',
+    idMode: 'set',
+    firstId: '',
+    nameMode: 'keep',
+    name: 'Unit {n}',
+    planFile: '',
+    allowDuplicate: false,
+    folder: await invoke('suggest_folder', { kind: 'batch' }),
+    error: null,
+  };
+}
+
+function renderBatch() {
+  return state.batch ? renderBatchOpen(state.batch) : renderBatchStart();
+}
+
+function radioIdNote() {
+  return 'Every radio needs its own Radio ID: two radios with one ID break private calls and caller display.';
+}
+
+function renderBatchStart() {
+  const f = state.batchForm;
+  const o = state.overview;
+  const bind = (key, attrs = {}) => h('input', {
+    type: 'text', spellcheck: 'false', value: f[key], ...attrs,
+    oninput: (e) => { f[key] = e.target.value; },
+  });
+  const choice = (name, value, current, label, onPick) => h('label', { class: 'opt' },
+    h('input', { type: 'radio', name, checked: current === value, onchange: () => { onPick(value); render(); } }), label);
+  const browse = (key, title, opts = {}) => h('button', {
+    type: 'button',
+    onclick: async () => {
+      const picked = opts.newFolder
+        ? null
+        : await pickPath({ title, directory: !opts.file, ...(opts.file ? { filters: [{ name: 'CSV', extensions: ['csv', 'txt'] }] } : {}) });
+      if (opts.newFolder) {
+        const input = { value: f[key] };
+        await browseNewFolder(input);
+        f[key] = input.value;
+      } else if (picked) {
+        f[key] = picked;
+      }
+      render();
+    },
+  }, 'Browse…');
+
+  const configFields = [
+    o ? choice('batch-config', true, f.useOpen, h('span', {}, 'The configuration open now: ', h('code', {}, o.folder)), (v) => { f.useOpen = v; }) : null,
+    o && f.useOpen && o.changes ? h('div', { class: 'opt', style: 'margin-left: 24px' },
+      h('span', {}, `Save its ${o.changes} unsaved change${o.changes === 1 ? '' : 's'} first into`), bind('saveTo'), browse('saveTo', '', { newFolder: true })) : null,
+    choice('batch-config', false, f.useOpen, 'A saved folder:', (v) => { f.useOpen = v; }),
+    !f.useOpen ? h('div', { class: 'opt', style: 'margin-left: 24px' }, bind('config', { placeholder: 'Folder saved by Read radio or Save as' }), browse('config', 'The configuration to put on every radio')) : null,
+  ];
+
+  const form = h('div', { class: 'batch-card batch-form' },
+    h('h2', {}, 'Start a new batch'),
+    h('fieldset', {}, h('legend', {}, 'Configuration to put on every radio'), ...configFields.filter(Boolean)),
+    h('fieldset', {}, h('legend', {}, 'Radio ID'),
+      choice('batch-id', 'set', f.idMode, h('span', { class: 'opt', style: 'margin: 0' }, 'Number the radios from', bind('firstId', { class: 'short', inputmode: 'numeric', placeholder: 'e.g. 101' })), (v) => { f.idMode = v; }),
+      h('p', { class: 'hint' }, 'Each radio gets the lowest Radio ID not yet given in this batch (the configuration\'s own ID is skipped). ' + radioIdNote()),
+      choice('batch-id', 'keep', f.idMode, 'Each radio keeps its own Radio ID', (v) => { f.idMode = v; })),
+    h('fieldset', {}, h('legend', {}, 'Radio name'),
+      choice('batch-name', 'set', f.nameMode, h('span', { class: 'opt', style: 'margin: 0' }, 'Name them', bind('name', { placeholder: 'Unit {n}' })), (v) => { f.nameMode = v; }),
+      h('p', { class: 'hint' }, '{n} = the radio\'s number in this batch (1, 2, 3 …), {id} = its Radio ID, {serial} = its serial number.'),
+      choice('batch-name', 'keep', f.nameMode, 'Each radio keeps its own name', (v) => { f.nameMode = v; })),
+    h('fieldset', {}, h('legend', {}, 'Plan by serial number (optional)'),
+      h('div', { class: 'opt' }, bind('planFile', { placeholder: 'No plan', readonly: true }), browse('planFile', 'CSV with planned Radio IDs and names', { file: true }),
+        f.planFile ? h('button', { type: 'button', onclick: () => { f.planFile = ''; render(); } }, 'Clear') : null),
+      h('p', { class: 'hint', style: 'margin-left: 0' }, 'A CSV file with a "serial" column and "radio id" and/or "name" columns. Radios listed there get exactly that; the others follow the rules above.')),
+    h('label', { class: 'opt' }, h('input', { type: 'checkbox', checked: f.allowDuplicate, onchange: (e) => { f.allowDuplicate = e.target.checked; } }),
+      'Allow two radios the same Radio ID (not recommended)'),
+    h('fieldset', {}, h('legend', {}, 'Batch folder (new)'),
+      h('div', { class: 'opt' }, bind('folder'), browse('folder', '', { newFolder: true })),
+      h('p', { class: 'hint', style: 'margin-left: 0' }, 'Holds a copy of the configuration, every radio\'s backup and written configuration, and the log (log.csv).')),
+    f.error ? h('div', { class: 'quick-error' }, f.error) : null,
+    h('div', { class: 'buttons' }, h('button', { class: 'primary', onclick: onBatchCreate }, 'Start batch')));
+
+  const resume = h('div', { class: 'batch-card' },
+    h('h2', {}, 'Continue a batch'),
+    h('p', { class: 'note' }, 'Open a batch folder started earlier, here or with hyt batch new. Its log and numbering carry on.'),
+    h('div', { class: 'buttons' }, h('button', { onclick: onBatchOpen }, 'Open batch folder…')));
+
+  return h('div', { class: 'batch' },
+    h('div', { class: 'view-head' }, h('h1', {}, 'Program radios')),
+    h('p', { class: 'note' }, 'Put one configuration on several radios of the same model, one after another. Each radio is read first (its backup), gets its own Radio ID and name, keeps its serial number, radio data, encryption keys and Bluetooth pairings, and is written and read back to check. Nothing is sent to a radio until you press Program.'),
+    h('div', { class: 'batch-cards' }, form, resume));
+}
+
+async function onBatchCreate() {
+  const f = state.batchForm;
+  f.error = null;
+  const firstId = f.idMode === 'set' ? f.firstId.trim() : '';
+  if (f.idMode === 'set' && !/^\d+$/.test(firstId)) {
+    f.error = 'Give the first Radio ID (a number), or let each radio keep its own.';
+    render();
+    return;
+  }
+  if (f.nameMode === 'set' && !f.name.trim()) {
+    f.error = 'Give a name pattern, or let each radio keep its own name.';
+    render();
+    return;
+  }
+  const spec = {
+    folder: f.folder.trim(),
+    config: f.useOpen && state.overview ? null : f.config.trim(),
+    save_to: f.useOpen && state.overview?.changes ? f.saveTo.trim() : null,
+    first_id: firstId ? Number(firstId) : null,
+    name: f.nameMode === 'set' ? f.name.trim() : null,
+    plan_file: f.planFile || null,
+    allow_duplicate_id: f.allowDuplicate,
+  };
+  try {
+    state.batch = await invoke('batch_create', { spec });
+    state.batchArmed = false;
+    state.batchLast = null;
+    if (state.overview) state.overview = await invoke('get_overview');
+    setStatus(`Started the batch in ${state.batch.folder}`, 'ok');
+  } catch (e) {
+    f.error = errorText(e);
+    setStatus(f.error, 'error');
+  }
+  render();
+}
+
+async function onBatchOpen() {
+  const folder = await pickPath({ directory: true, title: 'Open a batch folder' });
+  if (!folder) return;
+  try {
+    state.batch = await invoke('batch_open', { folder });
+    state.batchArmed = false;
+    state.batchLast = null;
+    setStatus(`Opened the batch ${state.batch.folder}`, 'ok');
+  } catch (e) {
+    setStatus(errorText(e), 'error');
+    await ask('Not a batch folder', [h('p', {}, errorText(e))], { cancel: false });
+  }
+  render();
+}
+
+async function onBatchClose() {
+  state.batch = null;
+  state.batchLast = null;
+  state.batchArmed = false;
+  await resetBatchForm();
+  render();
+}
+
+function identityText(i) {
+  if (!i) return '?';
+  return `Radio ID ${i.radio_id ?? '?'} · “${i.alias ?? ''}”`;
+}
+
+function nextText(b) {
+  if (!b.next) return null;
+  const n = b.next;
+  return `Radio ID ${n.radio_id ?? '(its own)'} · name ${n.name != null ? `“${n.name}”` : '(its own)'}`;
+}
+
+function renderBatchOpen(b) {
+  const f = b.file;
+  const c = f.configuration;
+  const n = b.counts;
+  const config = h('div', { class: 'batch-card' },
+    h('h2', {}, 'Configuration'),
+    h('div', { class: 'kv' },
+      h('span', {}, 'Model'), h('span', {}, `${f.model || '?'} · RCDB ${f.rcdb_version}`),
+      h('span', {}, 'From radio'), h('span', {}, `serial ${c.serial || '?'} · ${identityText(c)}`),
+      h('span', {}, 'Copied from'), h('span', {}, f.configuration_source),
+      h('span', {}, 'Batch folder'), h('span', {}, b.folder)),
+    h('ul', { class: 'rules' }, b.rules.map((r) => h('li', {}, r))),
+    h('div', { class: 'buttons', style: 'display: flex; gap: 8px; margin-top: 10px' },
+      h('button', { onclick: () => openFromBatch(b.config_folder), title: 'Open the batch\'s copy of the configuration (to look at it; changes there do not change the batch)' }, 'View configuration'),
+      h('button', { onclick: onBatchClose, disabled: state.busy }, 'Close batch')));
+
+  const last = state.batchLast;
+  const result = last ? h('div', { class: `batch-result ${last.outcome}` },
+    h('strong', {}, `Radio ${last.serial || '(none)'}: ${outcomeText(last.outcome)}`),
+    last.after ? h('div', {}, `${identityText(last.after)}${last.radio_ip ? ` · IP ${last.radio_ip}` : ''}`) : null,
+    h('div', { class: 'note', style: 'margin: 4px 0 0' }, last.message),
+    last.outcome === 'skipped' ? h('div', { class: 'buttons' },
+      h('button', { class: 'danger', disabled: state.busy || !state.batchArmed, onclick: () => onBatchProgram(true) }, 'Program it again')) : null) : null;
+
+  const next = h('div', { class: 'batch-card batch-next' },
+    h('h2', {}, 'Next radio'),
+    b.next ? h('div', { class: 'next-values' }, nextText(b)) : h('div', { class: 'quick-error' }, b.next_error || '?'),
+    h('p', { class: 'note' }, 'Radios in the plan get their planned values; a radio programmed before in this batch keeps what it got.'),
+    h('div', { class: 'row' }, h('span', {}, 'Port'), batchPort, h('button', { type: 'button', onclick: () => fillPorts(batchPort) }, 'Refresh')),
+    h('label', { class: 'check' },
+      h('input', { type: 'checkbox', checked: state.batchArmed, onchange: (e) => { state.batchArmed = e.target.checked; render(); } }),
+      h('span', {}, 'I want to overwrite the configuration of every radio I connect here with this batch\'s configuration.')),
+    h('div', { class: 'buttons' },
+      h('button', { class: 'danger big', disabled: state.busy || !state.batchArmed, onclick: () => onBatchProgram(false) }, 'Program the connected radio')),
+    result);
+
+  const summary = h('p', { class: 'note' },
+    `${n.radios_done} radio${n.radios_done === 1 ? '' : 's'} done`,
+    n.radios_failed ? ` · ${n.radios_failed} need${n.radios_failed === 1 ? 's' : ''} writing again (connect ${n.radios_failed === 1 ? 'it' : 'them'} and program)` : '',
+    ` · ${f.radios.length} attempt${f.radios.length === 1 ? '' : 's'} (${n.verified} verified, ${n.skipped} skipped, ${n.not_written} not written, ${n.failed} failed) · log: `,
+    h('code', {}, b.log_file));
+
+  const log = b.entries.length ? h('table', { class: 'grid batch-log' },
+    h('thead', {}, h('tr', {}, ['No.', 'Time', 'Serial', 'Result', 'Radio ID', 'Name', 'Radio IP', 'Message', 'Folders'].map((t) => h('th', {}, t)))),
+    h('tbody', {}, b.entries.map((e) => {
+      const who = e.after || e.before;
+      const changed = (k) => e.after && e.before && e.after[k] !== e.before[k] ? ` (was ${e.before[k] ?? '?'})` : '';
+      return h('tr', {},
+        h('td', { class: 'no' }, e.number),
+        h('td', {}, e.time),
+        h('td', {}, e.serial || '–'),
+        h('td', {}, h('span', { class: `outcome ${e.outcome}` }, outcomeText(e.outcome))),
+        h('td', {}, (who?.radio_id ?? '–') + changed('radio_id')),
+        h('td', {}, (who?.alias ?? '–') + changed('alias')),
+        h('td', {}, e.radio_ip || '–'),
+        h('td', { class: 'message' }, e.message),
+        h('td', { class: 'folders' },
+          e.written ? h('button', { class: 'linkish', title: e.written, onclick: () => openFromBatch(e.written) }, 'written') : null,
+          e.backup ? h('button', { class: 'linkish', title: e.backup, onclick: () => openFromBatch(e.backup) }, 'backup') : null));
+    }))) : h('p', { class: 'note' }, 'No radio programmed yet.');
+
+  return h('div', { class: 'batch' },
+    h('div', { class: 'view-head' }, h('h1', {}, 'Program radios'), h('span', { class: 'note' }, b.folder)),
+    h('div', { class: 'batch-cards' }, next, config),
+    summary,
+    log);
+}
+
+function outcomeText(o) {
+  return { verified: 'verified', skipped: 'skipped (already done)', not_written: 'not written', failed: 'FAILED' }[o] || o;
+}
+
+async function openFromBatch(folder) {
+  if (!(await confirmDiscard())) return;
+  await openFolder(folder);
+}
+
+async function onBatchProgram(again) {
+  if (state.busy || !state.batch || !state.batchArmed) return;
+  let port;
+  try {
+    port = await chosenSource(batchPort, $('read-replay'));
+  } catch (e) {
+    setStatus(errorText(e), 'error');
+    return;
+  }
+  try {
+    const title = again ? 'Programming the radio again' : 'Programming the radio';
+    const [view, entry] = await withProgress(title, () => invoke('batch_program', { folder: state.batch.folder, port, again }));
+    state.batch = view;
+    state.batchLast = entry;
+    const kind = entry.outcome === 'verified' ? 'ok' : entry.outcome === 'skipped' ? '' : 'error';
+    setStatus(`Radio ${entry.serial || '(none)'}: ${outcomeText(entry.outcome)}. ${entry.message}`, kind);
+  } catch (e) {
+    setStatus(errorText(e), 'error');
+    await ask('Batch error', [h('pre', {}, errorText(e))], { cancel: false });
+  }
+  render();
 }
 
 // ---------- "More" menu: CSV and CPS templates ----------
@@ -1442,6 +1747,7 @@ async function init() {
   $('btn-read').addEventListener('click', onRead);
   $('btn-save').addEventListener('click', onSave);
   $('btn-write').addEventListener('click', onWrite);
+  $('btn-batch').addEventListener('click', enterBatchMode);
   $('read-refresh').addEventListener('click', () => fillPorts($('read-port')));
   $('write-refresh').addEventListener('click', () => fillPorts($('write-port')));
   $('read-out-browse').addEventListener('click', () => browseNewFolder($('read-out')));

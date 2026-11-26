@@ -9,7 +9,7 @@ use hyt_core::edit::apply_edits;
 use hyt_core::tables::{Editor, RecordRef, TABLE_IDS, change_list, record_detail, table};
 use hyt_core::workspace::{FieldRef, Workspace};
 use hyt_core::write_flow::{WriteJob, WriteSettings, write_config};
-use hyt_core::{decode_read, load_read};
+use hyt_core::{decode_read, load_config_default};
 use hytera_codeplug::options::Options;
 use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot};
 use hytera_proto::Session;
@@ -157,7 +157,7 @@ fn edits_are_validated_like_hyt_apply() {
     assert_eq!((rx.old.as_str(), rx.new.as_str()), ("444.725 MHz", "430.0125 MHz"));
 
     // Same files as `hyt apply` with the equivalent JSON edit.
-    let saved = load_read(&ws.folder).unwrap();
+    let saved = load_config_default(&ws.folder).unwrap();
     let mut edit = decode_read(&saved, &ws.layout).unwrap().into_iter().find(|f| f.name == "QEU_C_DChannel").unwrap();
     let fields = &mut edit.blocks[0].records[1].fields.as_mut().unwrap().0;
     fields.insert("Channel Alias".into(), json!("GUI Test 2"));
@@ -193,11 +193,17 @@ fn zone_and_contact_edits_and_save_as() {
 
     // The saved folder keeps the radio's identity (so `hyt write` accepts it) and differs from
     // the original in exactly the edited files.
-    let a = load_read(&original).unwrap();
-    let b = load_read(&out).unwrap();
+    let a = load_config_default(&original).unwrap();
+    let b = load_config_default(&out).unwrap();
     assert_eq!(a.manifest.serial_number, b.manifest.serial_number);
-    let differing: Vec<String> =
-        a.manifest.files.iter().filter(|f| a.files[&f.id] != b.files[&f.id]).map(|f| f.name.clone()).collect();
+    let written = |f: &[u8]| hytera_codeplug::container::prepare_for_write(f).unwrap();
+    let differing: Vec<String> = a
+        .manifest
+        .files
+        .iter()
+        .filter(|f| written(&a.files[&f.id]) != written(&b.files[&f.id]))
+        .map(|f| f.name.clone())
+        .collect();
     assert_eq!(differing, ["QEU_C_ZoneAlias", "QEU_C_DContact", "QEU_C_AChannel"]);
     // Saving into a non-empty folder is refused.
     assert!(ws.save_as(&out).is_err());
@@ -205,24 +211,28 @@ fn zone_and_contact_edits_and_save_as() {
 }
 
 #[test]
-fn write_flow_backs_up_then_refuses_another_radio() {
+fn write_flow_backs_up_then_refuses_another_model() {
     let Some(rcdb) = rcdb() else { return };
     let capture = root().join("captures/read_2026-11-18.jsonl");
     let folder = root().join("captures/hyt-read_2026-11-18");
     if !capture.is_file() || !folder.is_dir() {
         return;
     }
-    let mut saved = load_read(&folder).unwrap();
-    saved.manifest.serial_number = Some("SOMEONE ELSE".into());
+    let mut saved = load_config_default(&folder).unwrap();
+    // Another radio of the same model is fine (it keeps its identity); another model is not.
+    saved.manifest.model_name = Some("BP999".into());
     let backup = temp_dir("write-refused");
     let mut session = Session::new(ReplayTransport::from_jsonl_file(&capture).unwrap());
     let job = WriteJob { saved: &saved, source: "test folder", backup: &backup, port: "replay" };
     let err = write_config(&mut session, &rcdb, &job, &WriteSettings::default(), |_| {}).unwrap_err();
-    assert!(format!("{err:#}").contains("refusing to write"), "{err:#}");
+    let text = format!("{err:#}");
+    assert!(text.contains("only go onto the same model") && text.contains("nothing was written"), "{text}");
     // The fresh backup was taken first and matches the radio.
-    let taken = load_read(&backup).unwrap();
+    let taken = load_config_default(&backup).unwrap();
     assert_eq!(taken.manifest.serial_number.as_deref(), Some("R23N141382"));
     assert_eq!(taken.files.len(), 58);
+    let log = std::fs::read_to_string(backup.join(hyt_core::write_flow::WRITE_LOG)).unwrap();
+    assert!(log.contains("FAILED") && log.contains("only go onto the same model"), "{log}");
     std::fs::remove_dir_all(&backup).unwrap();
 
     // An existing backup folder is refused before talking to the radio.

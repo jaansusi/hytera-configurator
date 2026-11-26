@@ -225,7 +225,7 @@ fn encrypt_key_names_only_existing_keys() {
     assert_eq!(options_of(&field.cell), ["None"], "the key list is empty");
     // Edits that do not go through the GUI (hyt apply) cannot point at a key that does not exist,
     // but may still switch a channel's encryption on.
-    let saved = hyt_core::load_read(&ws.folder).unwrap();
+    let saved = hyt_core::load_config_default(&ws.folder).unwrap();
     let with = |encrypt: i64, key: i64| {
         let mut edits = ws.edit_form().to_vec();
         let dch = edits.iter_mut().find(|f| f.name == "QEU_C_DChannel").unwrap();

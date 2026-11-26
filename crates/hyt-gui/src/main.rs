@@ -19,7 +19,10 @@ use std::path::PathBuf;
 /// The simulated radio from `HYT_GUI_SIM`, if set and loadable.
 fn simulated_radio() -> Option<(hytera_proto::sim::SharedSim, String)> {
     let folder = std::env::var_os("HYT_GUI_SIM")?;
-    match hyt_core::load_read(std::path::Path::new(&folder)) {
+    let rcdb = hytera_codeplug::rcdb::RcdbRoot::new(
+        std::env::var_os("HYT_RCDB").map_or_else(hytera_codeplug::rcdb::default_root, PathBuf::from),
+    );
+    match hyt_core::load_config(std::path::Path::new(&folder), &rcdb) {
         Ok(saved) => {
             let mut radio = hyt_core::sim_radio(&saved);
             radio.faults.restart_requests = 2;
@@ -77,6 +80,9 @@ fn main() {
             commands::import_template,
             commands::read_radio,
             commands::write_radio,
+            commands::batch_create,
+            commands::batch_open,
+            commands::batch_program,
         ])
         .run(tauri::generate_context!())
         .expect("error while running hyt-gui");

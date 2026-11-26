@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use hyt_core::edit::{apply_edits, def_for, is_text};
 use hyt_core::workspace::{ChannelKind, FieldRef, Workspace};
-use hyt_core::{ReadManifest, decode_read, load_layout, load_options, load_options_for_read, load_read, model_number};
+use hyt_core::{ReadManifest, decode_read, load_layout, load_options, load_options_for_read, load_config_default, model_number};
 use hytera_codeplug::models::ModelRules;
 use hytera_codeplug::options::Options;
 use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot};
@@ -54,7 +54,7 @@ fn bp515_u1_is_narrowed_to_its_band() {
     if present().is_none() {
         return;
     }
-    let saved = load_read(&folder()).unwrap();
+    let saved = load_config_default(&folder()).unwrap();
     assert!(model_number(&saved.manifest).unwrap().starts_with("55P10B00-1L0BAPU1U1"));
     let generic = load_options(None, VERSION).unwrap();
     let (options, note) = load_options_for_read(None, &saved.manifest).unwrap();
@@ -83,7 +83,7 @@ fn bp515_u1_is_narrowed_to_its_band() {
 #[test]
 fn the_radio_configuration_fits_its_model() {
     let Some(rcdb) = present() else { return };
-    let saved = load_read(&folder()).unwrap();
+    let saved = load_config_default(&folder()).unwrap();
     let layout = load_layout(&saved, &rcdb).unwrap();
     let (options, _) = load_options_for_read(None, &saved.manifest).unwrap();
     let mut outside = Vec::new();
@@ -142,7 +142,7 @@ fn out_of_band_frequencies_are_refused() {
 #[test]
 fn apply_edits_refuses_raw_out_of_band_values() {
     let Some(rcdb) = present() else { return };
-    let saved = load_read(&folder()).unwrap();
+    let saved = load_config_default(&folder()).unwrap();
     let layout = load_layout(&saved, &rcdb).unwrap();
     let links = rcdb.table_links().unwrap();
     let (options, _) = load_options_for_read(None, &saved.manifest).unwrap();
@@ -169,7 +169,7 @@ fn without_a_model_number_the_generic_ranges_apply() {
     if present().is_none() {
         return;
     }
-    let saved = load_read(&folder()).unwrap();
+    let saved = load_config_default(&folder()).unwrap();
     let mut manifest: ReadManifest = serde_json::from_value(serde_json::to_value(&saved.manifest).unwrap()).unwrap();
     manifest.info.retain(|i| i.item != "0x0000");
     let (options, note) = load_options_for_read(None, &manifest).unwrap();

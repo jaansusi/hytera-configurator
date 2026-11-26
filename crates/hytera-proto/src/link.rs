@@ -211,6 +211,7 @@ impl<T: Transport> Link<T> {
     /// bytes with a single `00` byte (observed 3 of 3 times; probably so the USB serial adapter
     /// ends the transfer). The radio skips it while looking for the next sync byte.
     fn send_frame(&mut self, frame: &[u8]) -> Result<()> {
+        tracing::trace!("tx {}", hex(frame));
         self.transport.write_all(frame)?;
         if frame.len().is_multiple_of(USB_PACKET_SIZE) {
             self.transport.write_all(&[0x00])?;
@@ -295,6 +296,7 @@ impl<T: Transport> Link<T> {
         let mut buf = [0u8; 2048];
         loop {
             if let Some(frame) = self.reader.next_frame() {
+                tracing::trace!("rx {:?} seq {} payload {}", frame.kind, frame.seq, hex(&frame.payload));
                 return Ok(Some(frame));
             }
             let now = Instant::now();
@@ -308,6 +310,10 @@ impl<T: Transport> Link<T> {
             self.reader.push(&buf[..n]);
         }
     }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 #[cfg(test)]

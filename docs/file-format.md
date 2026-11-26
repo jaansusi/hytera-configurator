@@ -18,6 +18,16 @@ version, so pick files by that string:
 | `RCDB\DMR\<FileName>` | One JSON layout per file name, for the CPS install's own version |
 | `RCDB\Revison.txt` | `RCDB_Revision:V1.5.24.000` |
 
+**Older firmware** (observed 2026-11-26, BP515 U1 serial R225105080, firmware V1.5.13.000.01): the radio reports
+RCDB `V1.5.08.000`, and CPS V1.5.24 ships its file list (`RcdbXmls\V1.5.08.000.xml`, 57 files: no 254
+`QEU_C_Quick_Message`) and layout (`RcdbJsons\V1.5.08.000.txt`, 1,445 fields). Compared with V1.5.24.000 the
+layout keeps the same parameter ids in the same files; V1.5.24 adds files 254, 256–258 and fields in 18, 19, 46,
+96, 253; 5 fields are renamed (e.g. 18/1022 `English_USA_Lang` → `English`, 200/4127 `Text Message Content` →
+`Text Message`) and 9 moved or changed type (e.g. 46 `Up Short`/`Down Short` swap offsets, 200 `Call Mode`
+520 → 264). Decoding always uses the radio's own version's layout. CPS's parameter database
+(`XMLToolCompactData.sdf`) holds only its current version, so `hyt` labels an older radio with the newest exported
+data (`hytera_codeplug::options::data_version`) and says so (inferred to be what CPS does).
+
 ## 2. Field layout JSON (`RcdbJsons\<ver>.txt`)
 
 Top level: `{"detail": [...], "radio_info": {...}, "createtime": ...}`. Each `detail` entry:
@@ -429,6 +439,31 @@ QEU_C_Template_DChannel 252, Comm_RadioInfo 253, QEU_C_Quick_Message 254.
 
 CPS writes back 55 of them, including the call logs and inbox; it skips 242 `QEU_C_E2EEKEYLIST`,
 245 `QEU_C_BTMatchedList` and 253 `Comm_RadioInfo` (see [protocol.md §5](protocol.md#5-full-write-sequence-used-by-cps)).
+
+## 5a. hyt configuration folders (since 2026-11-26)
+
+A configuration is stored as **data**, not as files for one radio:
+
+| Path | Contents |
+|---|---|
+| `configuration.json` | `{format: "hyt-configuration", format_version: 1, tool, created_unix, source, layout, radio, files}`. `layout` is the RCDB version whose file/block/field names `files` uses; `files` is every file decoded to every field's raw value (the `hyt decode` shape). `radio` (model, model number, serial, firmware) is for reference only |
+| `radio/` | The untouched radio read the configuration was made from (`manifest.json` + `NNN_Name.bin`); for a template import, the template's files with the reference radio's identity. Decides which radio the folder is for |
+
+Opening a folder (`load_config`) rebuilds the files from the data onto `radio/` and returns them in the form CPS
+writes ([§4a](#4a-preparing-files-for-writing)). Writing (`hyt write`, GUI, `hyt copy`, batches) reads the target
+radio first and rebuilds **its** files from the data with **its** layout (`hyt-core/src/config.rs` `overlay`):
+records in the configuration's order (new ones from the radio's channel template or RCDB defaults, like CPS),
+each field from the configuration's field with the same parameter `Id` (stable across RCDB versions; the n-th
+field of an id for the n-th). Fields the radio's layout lacks are left out; fields only the radio has keep its
+value; values that do not fit the radio's field keep its value; all three are reported. Bytes outside records
+(file header, block heads, unused member slots of two-level lists) are the radio's own. What belongs to the
+radio (identity, `Comm_Basic` radio data block, files CPS never writes, and on another radio its Radio ID and
+alias) is kept by `copy::prepare`. Folders of earlier hyt versions (files + `manifest.json` only) still open.
+
+Observed for V1.5.24.000 → V1.5.08.000 (2026-11-26, offline): channels, zones, contacts carry over unchanged;
+left out are file 254 (Quick Message) and V1.5.24's new parameters (e.g. a new `Comm_Basic` block whose flags reuse
+names like "Keypad Tone" or "Color Code" under new ids 6654–6787; the tone settings themselves stay in `Comm_UI`
+with the same ids in both versions). Not yet checked against CPS: how CPS itself converts between versions.
 
 ## 6. CPS template files (`.tpl`)
 

@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use hyt_core::edit::{REMOVED, apply_edits};
-use hyt_core::{SavedRead, decode_read, load_read};
+use hyt_core::{SavedRead, decode_read, load_config_default};
 use hytera_codeplug::decode::{DecodedFile, Fields, decode};
 use hytera_codeplug::layout::Layout;
 use hytera_codeplug::options::Options;
@@ -31,7 +31,7 @@ fn fixture() -> Option<Fx> {
         return None;
     }
     let rcdb = RcdbRoot::new(rcdb_dir);
-    let before = load_read(&before).ok()?;
+    let before = load_config_default(&before).ok()?;
     Some(Fx {
         layout: rcdb.layout(&before.manifest.rcdb_version).ok()?,
         links: rcdb.table_links().ok()?,

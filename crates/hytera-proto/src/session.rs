@@ -11,7 +11,8 @@ use crate::{Error, Result};
 pub const DEFAULT_CHUNK_SIZE: u16 = 0x0400;
 
 /// Information items, in the order CPS queries them during identification. `None` marks the
-/// unknown `0x001B` query CPS sends between items `0xFFF6` and `0xFFF4`.
+/// unknown `0x001B` query CPS sends between items `0xFFF6` and `0xFFF4`. CPS skips the last one,
+/// `0x0071`, on some radios: see [`ASK_0071_ONLY_AFTER`].
 pub const CPS_IDENTIFY_SEQUENCE: &[Option<u16>] = &[
     Some(0x0002),
     Some(0x0000),
@@ -34,6 +35,15 @@ pub const CPS_IDENTIFY_SEQUENCE: &[Option<u16>] = &[
     Some(0x0065),
     Some(0x0071),
 ];
+
+/// How long to wait for the answer to the unknown `0x001B` query before going on without it.
+const UNKNOWN_1B_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// CPS asks for item `0x0071` (fixed string languages) only when this item answered "supported".
+/// Observed: BP515 firmware V1.5.36 (RCDB V1.5.24.000) answers 0x0045, 0x0065 and 0x0100 and CPS
+/// asks 0x0071; BP515 firmware V1.5.13 (RCDB V1.5.08.000, 2026-11-26) answers all three "not
+/// supported" and CPS disconnects right after 0x0065. Which of the three CPS checks is inferred.
+pub const ASK_0071_ONLY_AFTER: u16 = 0x0065;
 
 /// Well-known information items (meanings partly inferred; see `docs/protocol.md`).
 pub mod item {
@@ -169,13 +179,27 @@ impl<T: Transport> Session<T> {
         let mut info = RadioInfo::default();
         for step in CPS_IDENTIFY_SEQUENCE {
             match step {
+                Some(0x0071)
+                    if info.items.get(&ASK_0071_ONLY_AFTER).is_none_or(|i| i.status != 0) => {}
                 Some(item) => {
                     let value = self.get_info(*item)?;
                     info.items.insert(*item, value);
                 }
                 None => {
-                    let resp = self.call(opcode::INFO, sub::INFO_UNKNOWN_1B, vec![0, 0])?;
-                    info.unknown_1b = Some(resp.data);
+                    // Observed 2026-11-26: after an interrupted write the older BP515 acknowledged
+                    // this query but never answered it, while answering everything else. Wait
+                    // longer, then carry on without it so the radio can still be read.
+                    let usual = self.link.response_timeout;
+                    self.link.response_timeout = usual.max(UNKNOWN_1B_WAIT);
+                    let answer = self.call(opcode::INFO, sub::INFO_UNKNOWN_1B, vec![0, 0]);
+                    self.link.response_timeout = usual;
+                    match answer {
+                        Ok(resp) => info.unknown_1b = Some(resp.data),
+                        Err(Error::Timeout { .. }) => {
+                            tracing::warn!("the radio did not answer query 0003/001B; continuing without it");
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
             }
         }

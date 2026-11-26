@@ -8,10 +8,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
+use hyt_core::batch::{Assignment, Batch, BatchFile, Counts, Entry, IdRule, Rules, local_time, parse_plan};
+use hyt_core::copy::CopyEvent;
 use hyt_core::tables::{self, ChangeView, ChannelOption, DetailField, RecordRef, TABLE_IDS, Table};
 use hyt_core::workspace::{ChannelKind, FieldRef, Workspace};
 use hyt_core::write_flow::{WriteEvent, WriteJob, WriteSettings, write_config};
-use hyt_core::{load_read, read_radio as read_all, save_read};
+use hyt_core::{read_radio as read_all, save_read};
 use hytera_codeplug::rcdb::RcdbRoot;
 use hytera_proto::Session;
 use hytera_proto::sim::SharedSim;
@@ -336,6 +338,7 @@ pub fn suggest_folder(app: AppHandle, state: State<'_, AppState>, kind: String) 
         "backup" => format!("backup-before-write_{stamp}"),
         "edited" => format!("edited_{stamp}"),
         "template" => format!("from-template_{stamp}"),
+        "batch" => format!("batch_{stamp}"),
         other => return Err(format!("unknown folder kind {other:?}")),
     };
     Ok(base.join(name).display().to_string())
@@ -421,7 +424,7 @@ pub fn import_template(state: State<'_, AppState>, path: String, out: String) ->
     ensure_new_folder(&out)?;
     let mut guard = state.ws.lock().map_err(|_| "internal error: state lock poisoned")?;
     let ws = guard.as_ref().ok_or("open a configuration first (it is the radio the template is imported for)")?;
-    let (t, report) = hyt_core::tpl::import_file(Path::new(&path), &ws.saved, &out).map_err(text)?;
+    let (t, report) = hyt_core::tpl::import_file(Path::new(&path), &ws.saved, &out, &ws.layout).map_err(text)?;
     let opened = state.open(&out).map_err(text)?;
     let o = overview(&opened);
     *guard = Some(opened);
@@ -489,7 +492,7 @@ pub async fn read_radio(app: AppHandle, source: ReadSource, out: String) -> CmdR
             let result = read_all(&mut session, &state.rcdb(), |entry, _, done, total| {
                 emit(&app, "read", format!("Reading {}", entry.name), done, total)
             })?;
-            save_read(&result, &out, &label)?;
+            save_read(&result, &out, &label, &state.rcdb())?;
             let ws = state.open(&out)?;
             let o = overview(&ws);
             *state.ws.lock().map_err(|_| anyhow::anyhow!("internal error: state lock poisoned"))? = Some(ws);
@@ -501,12 +504,70 @@ pub async fn read_radio(app: AppHandle, source: ReadSource, out: String) -> CmdR
     .map_err(|e| e.to_string())?
 }
 
+/// Progress of a write (or of the backup read and write of a copy) as `progress` events.
+fn emit_write(app: &AppHandle, op: &'static str, event: WriteEvent<'_>) {
+    match event {
+        WriteEvent::BackupFile { done, total, entry } => emit(app, op, format!("Backup: reading {}", entry.name), done, total),
+        WriteEvent::BackupSaved { .. } => emit(app, op, "Backup saved; checking the radio", 0, 0),
+        WriteEvent::Prepared { .. } => emit(app, op, "Configuration made for this radio", 0, 0),
+        WriteEvent::Writing { files, differing } => {
+            emit(app, op, format!("Writing {files} files ({differing} differ from the radio)"), 0, files)
+        }
+        WriteEvent::Wrote { done, total, entry } => emit(app, op, format!("Wrote {}", entry.name), done, total),
+        WriteEvent::WaitingForRestart => emit(app, op, "Waiting for the radio to restart", 0, 0),
+        WriteEvent::NotReadyYet { attempt } => emit(app, op, format!("Radio not ready yet (attempt {attempt})"), 0, 0),
+        WriteEvent::ReadBackFile { done, total, entry } => {
+            emit(app, op, format!("Verifying: reading {}", entry.name), done, total)
+        }
+        WriteEvent::Verified { files } => emit(app, op, format!("Verified all {files} files"), files, files),
+    }
+}
+
+/// Save pending changes of the open configuration into `save_to` (required when there are any)
+/// and return its folder.
+fn saved_folder(state: &AppState, save_to: Option<&str>, what: &str) -> CmdResult<PathBuf> {
+    state.with_ws(|ws| {
+        if ws.has_changes() {
+            let to = save_to.with_context(|| format!("the changes must be saved before {what}; give a folder"))?;
+            ws.save_as(Path::new(to))?;
+        }
+        Ok(ws.folder.clone())
+    })
+}
+
 #[derive(Serialize)]
 pub struct WriteOutcome {
     written: usize,
     differing: usize,
     backup: String,
     folder: String,
+    /// What happened beyond a plain write: another radio (what it kept), another firmware.
+    notes: Vec<String>,
+}
+
+/// What the user should know about how a configuration was made for the radio written.
+fn write_notes(plan: &hyt_core::copy::CopyPlan) -> Vec<String> {
+    let or = |v: &Option<String>| v.clone().unwrap_or_else(|| "?".into());
+    let mut notes = Vec::new();
+    if plan.other_radio() {
+        notes.push(format!(
+            "This is another radio (serial {}) than the configuration came from (serial {}). It kept its own Radio ID {} \
+             and name {}; use \"Program radios…\" to give it new ones.",
+            or(&plan.before.serial),
+            or(&plan.source.serial),
+            or(&plan.after.radio_id),
+            or(&plan.after.alias)
+        ));
+    }
+    if plan.shares_id_with_source() {
+        notes.push(format!(
+            "Both radios now have Radio ID {}: give one of them another ID (private calls and caller display need \
+             one ID per radio).",
+            or(&plan.after.radio_id)
+        ));
+    }
+    notes.extend(plan.conversion.lines());
+    notes
 }
 
 /// Write the open configuration to the radio on `port` (the same sequence as `hyt write`). If
@@ -525,21 +586,12 @@ pub async fn write_radio(
         return Err(format!("{} already exists; choose a new backup folder", backup.display()));
     }
     let busy = Busy::acquire(&app)?;
-    let folder = {
-        let state = app.state::<AppState>();
-        state.with_ws(|ws| {
-            if ws.has_changes() {
-                let to = save_to.as_deref().context("the changes must be saved before writing; give a folder")?;
-                ws.save_as(Path::new(to))?;
-            }
-            Ok(ws.folder.clone())
-        })?
-    };
+    let folder = saved_folder(&app.state::<AppState>(), save_to.as_deref(), "writing")?;
     tauri::async_runtime::spawn_blocking(move || {
         let _busy = busy;
         let state = app.state::<AppState>();
         let run = || -> anyhow::Result<WriteOutcome> {
-            let saved = load_read(&folder)?;
+            let saved = hyt_core::load_config(&folder, &state.rcdb())?;
             emit(&app, "write", "Connecting", 0, 0);
             let (transport, label) = open_transport(&state, &port)?;
             let mut session = Session::new(transport);
@@ -549,34 +601,172 @@ pub async fn write_radio(
                 programming_date: Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
                 ..WriteSettings::default()
             };
-            let report = write_config(&mut session, &state.rcdb(), &job, &settings, |event| match event {
-                WriteEvent::BackupFile { done, total, entry } => {
-                    emit(&app, "write", format!("Backup: reading {}", entry.name), done, total)
-                }
-                WriteEvent::BackupSaved { .. } => emit(&app, "write", "Backup saved; checking it is the same radio", 0, 0),
-                WriteEvent::Writing { files, differing } => emit(
-                    &app,
-                    "write",
-                    format!("Writing {files} files ({differing} differ from the radio)"),
-                    0,
-                    files,
-                ),
-                WriteEvent::Wrote { done, total, entry } => emit(&app, "write", format!("Wrote {}", entry.name), done, total),
-                WriteEvent::WaitingForRestart => emit(&app, "write", "Waiting for the radio to restart", 0, 0),
-                WriteEvent::NotReadyYet { attempt } => {
-                    emit(&app, "write", format!("Radio not ready yet (attempt {attempt})"), 0, 0)
-                }
-                WriteEvent::ReadBackFile { done, total, entry } => {
-                    emit(&app, "write", format!("Verifying: reading {}", entry.name), done, total)
-                }
-                WriteEvent::Verified { files } => emit(&app, "write", format!("Verified all {files} files"), files, files),
-            })?;
+            let report = write_config(&mut session, &state.rcdb(), &job, &settings, |event| emit_write(&app, "write", event))?;
             Ok(WriteOutcome {
                 written: report.written,
                 differing: report.differing,
                 backup: report.backup.display().to_string(),
                 folder: source,
+                notes: report.prepared.as_ref().map(write_notes).unwrap_or_default(),
             })
+        };
+        run().map_err(text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// An open batch ("Program radios"), as the page shows it.
+#[derive(Serialize)]
+pub struct BatchView {
+    folder: String,
+    config_folder: String,
+    log_file: String,
+    file: BatchFile,
+    /// The rules in words.
+    rules: Vec<String>,
+    counts: Counts,
+    /// What the next new radio gets, or why that cannot be worked out.
+    next: Option<Assignment>,
+    next_error: Option<String>,
+    /// Attempts, newest first.
+    entries: Vec<EntryView>,
+}
+
+#[derive(Serialize)]
+pub struct EntryView {
+    #[serde(flatten)]
+    entry: Entry,
+    time: String,
+    /// The attempt's backup and written folders, where they exist.
+    backup: Option<String>,
+    written: Option<String>,
+}
+
+fn batch_view(b: &Batch) -> BatchView {
+    let (next, next_error) = match b.assign(None, None) {
+        Ok(a) => (Some(a), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+    let existing = |e: &Entry, sub: &str| {
+        let p = b.folder.join(&e.folder).join(sub);
+        hyt_core::is_config_folder(&p).then(|| p.display().to_string())
+    };
+    let entries = b
+        .file
+        .radios
+        .iter()
+        .rev()
+        .map(|e| EntryView {
+            time: local_time(e.started_unix),
+            backup: existing(e, "backup"),
+            written: existing(e, "written"),
+            entry: e.clone(),
+        })
+        .collect();
+    BatchView {
+        folder: b.folder.display().to_string(),
+        config_folder: b.config_folder().display().to_string(),
+        log_file: b.folder.join(hyt_core::batch::LOG_FILE).display().to_string(),
+        file: b.file.clone(),
+        rules: b.file.rules.describe(),
+        counts: b.counts(),
+        next,
+        next_error,
+        entries,
+    }
+}
+
+/// A new batch as the page describes it.
+#[derive(Deserialize)]
+pub struct NewBatch {
+    /// New folder for the batch.
+    folder: String,
+    /// The configuration: a saved folder, or `None` for the one open now.
+    config: Option<String>,
+    /// With the open configuration: where to save its unsaved changes first.
+    save_to: Option<String>,
+    /// First Radio ID to give; `None` keeps each radio's own.
+    first_id: Option<u64>,
+    /// Name pattern; `None` keeps each radio's own name.
+    name: Option<String>,
+    /// CSV file with planned Radio IDs / names by serial number.
+    plan_file: Option<String>,
+    allow_duplicate_id: bool,
+}
+
+/// Start a batch (nothing is sent to a radio).
+#[tauri::command]
+pub fn batch_create(state: State<'_, AppState>, spec: NewBatch) -> CmdResult<BatchView> {
+    let folder = PathBuf::from(spec.folder.trim());
+    if spec.folder.trim().is_empty() {
+        return Err("choose a new folder for the batch".into());
+    }
+    let config = match spec.config.as_deref().map(str::trim) {
+        Some(c) if !c.is_empty() => PathBuf::from(c),
+        Some(_) => return Err("choose the configuration's folder".into()),
+        None => saved_folder(&state, spec.save_to.as_deref(), "starting the batch")?,
+    };
+    let plan = match spec.plan_file.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => {
+            let csv = std::fs::read_to_string(p).map_err(|e| format!("reading {p}: {e}"))?;
+            parse_plan(&csv).with_context(|| format!("plan {p}")).map_err(text)?
+        }
+        None => Vec::new(),
+    };
+    let rules = Rules {
+        radio_id: spec.first_id.map_or(IdRule::Keep, |first| IdRule::Sequence { first }),
+        name: spec.name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()),
+        plan,
+        allow_duplicate_id: spec.allow_duplicate_id,
+    };
+    let batch = Batch::create(&folder, &config, rules, &state.rcdb(), state.options_path.as_deref()).map_err(text)?;
+    Ok(batch_view(&batch))
+}
+
+#[tauri::command]
+pub fn batch_open(folder: String) -> CmdResult<BatchView> {
+    Ok(batch_view(&Batch::open(Path::new(&folder)).map_err(text)?))
+}
+
+/// Program the radio on `port` in the batch `folder` (see `hyt_core::batch`): read it, give it
+/// its Radio ID and name, write and verify, and log it. Errors are only the batch's own (the
+/// radio's outcome is in the returned entry). Changes the radio: the page asks the user to
+/// confirm overwriting radios for this batch first.
+#[tauri::command]
+pub async fn batch_program(app: AppHandle, folder: String, port: ReadSource, again: bool) -> CmdResult<(BatchView, Entry)> {
+    let busy = Busy::acquire(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy;
+        let state = app.state::<AppState>();
+        let run = || -> anyhow::Result<(BatchView, Entry)> {
+            let mut batch = Batch::open(Path::new(&folder))?;
+            emit(&app, "batch", "Connecting", 0, 0);
+            let (transport, label) = open_transport(&state, &port)?;
+            let mut session = Session::new(transport);
+            let settings = WriteSettings {
+                programming_date: Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
+                ..WriteSettings::default()
+            };
+            let entry =
+                batch.program(&mut session, &state.rcdb(), &label, state.options_path.as_deref(), &settings, again, |event| {
+                    match event {
+                        CopyEvent::Step(e) => emit_write(&app, "batch", e),
+                        CopyEvent::Prepared(plan) => emit(
+                            &app,
+                            "batch",
+                            format!(
+                                "Radio {}: Radio ID {}, name \"{}\"; writing next",
+                                plan.before.serial.as_deref().unwrap_or("?"),
+                                plan.after.radio_id.as_deref().unwrap_or("?"),
+                                plan.after.alias.as_deref().unwrap_or("")
+                            ),
+                            0,
+                            0,
+                        ),
+                    }
+                })?;
+            Ok((batch_view(&batch), entry))
         };
         run().map_err(text)
     })

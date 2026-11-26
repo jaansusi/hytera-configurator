@@ -100,6 +100,45 @@ on **COM3** (Prolific PL2303GC cable). Reference software: Hytera CPS V1.5.24.00
   licences in identify item `0x0200` (BP515: none). CPS V1.5.24 refuses Basic Encryption (1509) for the BP515 U1.
   `hyt licence check <zip> --radio <read>` repeats CPS's checks; `hyt licence status` shows item `0x0200` and the
   flags (`hyt-core/src/licence.rs`). The owner has ordered licences from Hytera (due about 2026-11-26).
+- Programming several radios (2026-11-20; **live on a second BP515**, see below): GUI "Program radios…" screen and `hyt batch
+  new|program|status` (`hyt-core/src/batch.rs`). A batch folder holds a frozen copy of the configuration, rules
+  (Radio ID: lowest free from a first ID, or keep; name: pattern `{n}`/`{id}`/`{serial}`, or keep; optional plan
+  CSV by serial) and a log (`batch.json`, `log.csv`, `radios/NNN/{backup,written}`). Radios already verified in the
+  batch are skipped unless asked again; a radio whose write failed gets the same ID/name again; duplicate IDs in
+  the batch refused. Replaces the GUI's earlier "Copy to radio…" dialog. Each radio goes through `hyt copy`'s flow
+  (`hyt-core/src/copy.rs`, `copy_choosing`): one read of the target as backup → the configuration with the target's identity, never-written files,
+  `Comm_Basic` radio data block (inferred) and own Radio ID/alias unless given → write + verify. Refuses another
+  model/model number/RCDB and (unless allowed) the configuration's own Radio ID. Radio IP now follows Radio ID and
+  Subnet like CPS (rule observed in CPS's code; `workspace.rs` `radio_ip`). **Live 2026-11-20** (owner's OK): second
+  BP515 U1 serial R23N030201 (same model number/firmware/RCDB, factory-like settings, Radio ID 1) programmed by
+  `hyt batch program --once` from `captures/unattended_2026-11-19/end`: Radio ID 2, name "Radio 2", IP 10.0.0.2,
+  verified; a separate `hyt read` differs from radio 1's configuration only in Radio ID/alias/IP and programming
+  date; connecting it again was skipped without writing (`captures/second-radio_2026-11-20/`). The second radio now
+  holds radio 1's configuration as Radio 2. The GUI screen itself has only run against the simulated radio.
+- Older firmware (2026-11-26): a third BP515 U1 (serial R225105080, firmware V1.5.13.000.01, **RCDB V1.5.08.000**,
+  57 files) reads with `hyt read` (`captures/old-bp515-read_2026-11-26/`), decodes/round-trips with its own layout,
+  and shows/edits with labels from the newest exported CPS data (`data_version`; note shown). Writing now needs the
+  model *and* RCDB version verified (`ModelProfile::write_verified`). Owner recorded CPS reading + writing its
+  unchanged configuration (`captures/cps-read-old-bp515_2026-11-26.jsonl`, `write-unchanged-old-bp515_2026-11-26.jsonl`;
+  both halves in `cps-read-write-old-bp515_2026-11-26.jsonl`): `hyt` replays both byte for byte (54 files, 301 writes;
+  CPS skips identify item 0x0071 on this radio, now copied). **Live `hyt write` 2026-11-26** (owner's OK) of its
+  unchanged configuration: 54 files read back as written; a separate read differs from the morning's only in the
+  programming date (`captures/old-bp515-write_2026-11-26/`). `BP515.verified_rcdb_versions` now has V1.5.08.000, so
+  CLI and GUI write it without override. Radio state: its own factory-like configuration, programmed 2026-11-26.
+- Configurations as data (2026-11-26, owner's decision; offline only so far): folders hold
+  `configuration.json` (every setting's value, by the layout it was read with) + `radio/` (the untouched read);
+  writing rebuilds the *target radio's* files from that data with its own layout (`hyt-core/src/config.rs`
+  `overlay`, fields matched by CPS parameter id), so any configuration goes onto any BP515 U1 of any verified
+  firmware. Plain Write onto another radio keeps that radio's identity/Radio ID/alias (like copy; notes shown).
+  Tested: same layout exact on both radios; radio 1's `default` → old radio (simulated) converted, written,
+  verified. Old folders still open. See `docs/file-format.md` §5a. Not yet: a CPS recording of a cross-version write.
+  **First live cross-version write (owner, GUI, 14:00) stopped after 5 of 54 files** on the older radio; the radio
+  then reported "Power Up Error / Programming is not finished" (file 97 State/ErrorReason) and stopped answering
+  identify query 001B. Restored by writing its 14:00 backup (verified; `captures/old-bp515-restore_2026-11-26/log.md`).
+  Since then: on another radio its programming passwords are kept; every write saves `write-log.txt` (incl. the
+  error) in its backup folder; identify continues without an unanswered 001B. **Second try succeeded** (owner's OK,
+  `hyt -vvv write`, passwords kept): `default` on the older radio, verified, radio healthy
+  (`captures/old-bp515-default-write_2026-11-26/`). Cause of the first stop: inferred the copied passwords, not proven.
 - Next: owner review (`docs/todo-owner.md`); CPS recordings for zone/contact/list-member add/remove and
   referenced-channel removal; merge branch `unattended-2026-11-19` after review.
 
@@ -114,11 +153,11 @@ older ones need `%USERPROFILE%\.cargo\bin` added.
 | `crates/hytera-codeplug` | RCDB file lists, `TableLink.xml`, CPS write order, file header + CRC rules + `prepare_for_write` (`container`), block structure (`structure`), field layouts from `RcdbJsons` (`layout`), field codec (`value`), whole-file decode/apply (`decode`), CPS's reference config `DataValidationConfig.config`/`ComplexRuleConfig.Config` (`validation`), CPS's help
 texts `CPSParams.xlsx` (`help`), which parameters CPS shows (`param_visibility`, from `visibility.json`), link rules from `links.json` (`link_rules`) |
 | `crates/hytera-models` | Model profiles (`BP515` incl. files never written; read-only `GENERIC_G2` fallback) |
-| `crates/hyt-core` | Shared by CLI and GUI: `src/lib.rs` (read/save/load folders, plan/verify writes, `load_options`), `view.rs` (labelled output, `is_secret`), `edit.rs` (labels ↔ raw, `apply_edits`, diff), `write_flow.rs` (backup → same-radio check → write → wait for restart → verify), `workspace.rs` (open folder + validated pending edits incl. channel add/remove and zone member actions, save-as), `tables.rs` (GUI tables, record detail, change list), `lists.rs` (list editors: RX group/scan/roam lists and other one-level lists as `list:<file>` tables, members read-only by name), `refs.rs` (reference fields by name, from CPS's `DataValidationConfig.config`; built-in fallback), `link_rules.rs` (CPS's link rules: disabled fields with reason, forced values), `sheet.rs` (tables as CSV, files + suggested names), `tpl.rs` (CPS `.tpl` import/export incl. `export_workspace`, `import_file`), `licence.rs` (licence package checks like CPS's Authorization, installed licences from item `0x0200`), `quick.rs` (beginner quick
+| `crates/hyt-core` | Shared by CLI and GUI: `src/lib.rs` (configuration folders: `save_read`, `save_config`, `load_config`, `load_read` for raw reads; plan/verify writes, `load_options`), `view.rs` (labelled output, `is_secret`), `edit.rs` (labels ↔ raw, `apply_edits`, diff), `config.rs` (configurations as data: `overlay` rebuilds any radio's files from a configuration with that radio's layout, report of what did not carry over), `write_flow.rs` (backup → configuration made for this radio → write → wait for restart → verify), `copy.rs` (`prepare`: configuration made into one radio's files; on another radio keeps its identity/own data, sets Radio ID/alias), `batch.rs` (programming several radios: batch folder, ID/name rules and plan, log), `workspace.rs` (open folder + validated pending edits incl. channel add/remove and zone member actions, save-as), `tables.rs` (GUI tables, record detail, change list), `lists.rs` (list editors: RX group/scan/roam lists and other one-level lists as `list:<file>` tables, members read-only by name), `refs.rs` (reference fields by name, from CPS's `DataValidationConfig.config`; built-in fallback), `link_rules.rs` (CPS's link rules: disabled fields with reason, forced values), `sheet.rs` (tables as CSV, files + suggested names), `tpl.rs` (CPS `.tpl` import/export incl. `export_workspace`, `import_file`), `licence.rs` (licence package checks like CPS's Authorization, installed licences from item `0x0200`), `quick.rs` (beginner quick
 setup: questions → preset values, dry run / all-or-nothing apply), `visibility.rs` (fields CPS hides: licence /
 internal); tests: `visibility.rs` (against CPS screenshots); tests: `quick_setup.rs` (questions, presets,
-channel add, help texts), `replay_read.rs`, `replay_write.rs` (CPS recordings), `decode_roundtrip.rs`, `edit_values.rs`, `add_records.rs`, `delete_channel.rs`, `workspace_tables.rs` (GUI model + write-flow refusals), `workspace_structure.rs` (GUI add/remove vs CPS recordings, renumbering, references), `list_editors.rs` (list tables, member names, value edits, change list), `references.rs` (CPS references, special values, link rules) |
-| `crates/hyt-cli` | `hyt` binary (`ports`, `info`, `read`, `write`, `decode [--labels]`, `show [--all]`, `apply`, `diff`, `csv`, `tpl`, `licence check|status`); only argument parsing and printing (`src/main.rs`) |
+channel add, help texts), `replay_read.rs`, `replay_write.rs` (CPS recordings), `decode_roundtrip.rs`, `edit_values.rs`, `add_records.rs`, `delete_channel.rs`, `workspace_tables.rs` (GUI model + write-flow refusals), `workspace_structure.rs` (GUI add/remove vs CPS recordings, renumbering, references), `list_editors.rs` (list tables, member names, value edits, change list), `references.rs` (CPS references, special values, link rules), `copy_radio.rs` (copy to another radio, Radio IP rule, simulated radio), `batch_programming.rs` (batches on several simulated radios; shared helpers in `tests/common/mod.rs`) |
+| `crates/hyt-cli` | `hyt` binary (`ports`, `info`, `read`, `write`, `copy`, `batch new|program|status`, `decode [--labels]`, `show [--all]`, `apply`, `diff`, `csv`, `tpl`, `licence check|status`); only argument parsing and printing (`src/main.rs`) |
 | `crates/hyt-gui` | Tauri 2 desktop app `hyt-gui [folder]`: `src/commands.rs` (commands on `hyt-core`, radio jobs on a blocking thread with `progress` events), `ui/` (static `index.html`, `app.js`, `style.css`; no npm build), `tauri.conf.json`, `capabilities/`, `icons/` (from `tools/make_icon.py`) |
 
 - Test: `cargo test --workspace` (replay test skips itself if `captures/` or the CPS install is missing).
@@ -136,7 +175,10 @@ channel add, help texts), `replay_read.rs`, `replay_write.rs` (CPS recordings), 
   a zone member, append `{"Channel List": 3, "Channel Type": "Digital"}` to the zone's `members` (channel numbers
   as in the read; channels added in the same edit continue that numbering).
 - Write (changes the radio; only with the owner's OK): `hyt write --port COM3 --from <read or edited folder>
-  --backup <new folder>`. `--allow-unverified` is only needed for models without `write_supported`.
+  --backup <new folder>`. Another radio of the same model: `hyt copy --from <folder> --port COM3 --backup <new>
+  --out <new> [--radio-id N] [--alias NAME]` (`--like <read>` instead of `--port`/`--backup` only makes the folder).
+  Many radios: `hyt batch new <new batch folder> --from <folder> [--first-id N] [--name "Unit {n}"] [--plan plan.csv]`,
+  then `hyt batch program <batch> --port COM3` (Enter per radio; `--once` for one) and `hyt batch status <batch>`. `--allow-unverified` is only needed for models without `write_supported`.
 - RCDB location: `--rcdb <folder>` or env `HYT_RCDB`; default is the CPS install path.
 - Option labels: run `powershell -ExecutionPolicy Bypass -File tools\export-rcdb-options.ps1` once per CPS
   version; `hyt show --options <file>` or env `HYT_OPTIONS` overrides the default location.

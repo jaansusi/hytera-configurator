@@ -98,7 +98,9 @@ fn values_are_validated_and_nothing_is_kept_on_error() {
     values.insert("Radio ID".to_string(), "2470001".to_string());
     let identity = Reply { question: "identity".into(), values, ..Default::default() };
     let out = apply(&mut ws, std::slice::from_ref(&identity), false).unwrap();
-    assert_eq!(out.changes.len(), 2, "{:?}", out.changes);
+    // Radio IP follows Radio ID like in CPS (10.37.176.113).
+    assert_eq!(out.changes.len(), 3, "{:?}", out.changes);
+    assert!(out.changes.iter().any(|c| c.setting == "Radio IP" && c.new == (0x71B0_250A_i64).to_string()), "{:?}", out.changes);
     ws.discard();
 
     // An ID out of range fails the whole request, including the earlier answer.

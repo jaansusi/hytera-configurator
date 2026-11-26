@@ -5,7 +5,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use hyt_core::tpl::{self, ExportOptions, ParamStore, Template, TemplateHeader};
-use hyt_core::{SavedRead, decode_read, load_read};
+use hyt_core::{SavedRead, decode_read, load_config_default};
 use hytera_codeplug::container::prepare_for_write;
 use hytera_codeplug::layout::Layout;
 use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot, TableLink};
@@ -16,6 +16,7 @@ struct Fx {
     like_dir: PathBuf,
     layout: Layout,
     links: Vec<TableLink>,
+    rcdb: RcdbRoot,
 }
 
 fn fixture() -> Option<Fx> {
@@ -33,10 +34,10 @@ fn fixture() -> Option<Fx> {
         return None;
     }
     let rcdb = RcdbRoot::new(cps);
-    let like = load_read(&like_dir).ok()?;
+    let like = load_config_default(&like_dir).ok()?;
     let layout = rcdb.layout(&like.manifest.rcdb_version).ok()?;
     let links = rcdb.table_links().ok()?;
-    Some(Fx { templates, like, like_dir, layout, links })
+    Some(Fx { templates, like, like_dir, layout, links, rcdb })
 }
 
 fn temp(name: &str) -> PathBuf {
@@ -87,10 +88,10 @@ fn import_each_template_and_decode() {
         let t = Template::read(path).unwrap();
         assert!(t.warnings().is_empty(), "{}: {:?}", path.display(), t.warnings());
         let out = temp(&format!("import-{i}"));
-        let report = tpl::import(&t, &fx.like, &out, "test").unwrap();
+        let report = tpl::import(&t, &fx.like, &out, "test", &fx.layout).unwrap();
         assert_eq!(report.from_template, fx.like.manifest.files.len(), "{}", path.display());
         assert!(report.kept_from_reference.is_empty() && report.ignored.is_empty());
-        let saved = load_read(&out).unwrap();
+        let saved = load_config_default(&out).unwrap();
         // The reference radio's identity is kept, so `hyt write` accepts the folder for it.
         let (a, b) = (&saved.manifest, &fx.like.manifest);
         assert_eq!(
@@ -116,7 +117,7 @@ fn export_of_import_reproduces_the_template() {
         let original_bytes = std::fs::read(path).unwrap();
         let original = Template::parse(&original_bytes).unwrap();
         let folder = temp(&format!("rt-{i}"));
-        tpl::import(&original, &fx.like, &folder, "test").unwrap();
+        tpl::import(&original, &fx.like, &folder, "test", &fx.layout).unwrap();
         let out = temp(&format!("rt-{i}.tpl"));
         let opts = ExportOptions {
             name: None,
@@ -126,7 +127,7 @@ fn export_of_import_reproduces_the_template() {
             seqo_from: None,
             when: tpl::now(),
         };
-        let (_, report) = tpl::export(&folder, &out, &fx.links, opts).unwrap();
+        let (_, report) = tpl::export(&folder, &out, &fx.rcdb, &fx.links, opts).unwrap();
         assert_eq!(report.headers_kept, 58);
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
         let exported_bytes = std::fs::read(&out).unwrap();
@@ -181,7 +182,7 @@ fn export_of_a_radio_read_has_cps_structure() {
         seqo_from: Some(&reference),
         when: tpl::now(),
     };
-    let (_, report) = tpl::export(&fx.like_dir, &out, &fx.links, opts).unwrap();
+    let (_, report) = tpl::export(&fx.like_dir, &out, &fx.rcdb, &fx.links, opts).unwrap();
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     let t = Template::read(&out).unwrap();
     std::fs::remove_file(&out).unwrap();
@@ -214,20 +215,20 @@ fn a_template_for_another_rcdb_version_or_model_is_refused() {
     std::fs::write(&path, other_version.to_bytes(tpl::now()).unwrap()).unwrap();
     let t = Template::read(&path).unwrap();
     let out = temp("other-version");
-    let err = tpl::import(&t, &fx.like, &out, "test").unwrap_err().to_string();
+    let err = tpl::import(&t, &fx.like, &out, "test", &fx.layout).unwrap_err().to_string();
     assert!(err.contains("RCDB V1.5.99.000"), "{err}");
     assert!(!out.exists());
     std::fs::remove_file(&path).unwrap();
 
     let mut store_version = base.clone();
     store_version.entries[3].store.rcdb_version = Some("V1.5.99.000".into());
-    let err = tpl::import(&store_version, &fx.like, &out, "test").unwrap_err().to_string();
+    let err = tpl::import(&store_version, &fx.like, &out, "test", &fx.layout).unwrap_err().to_string();
     assert!(err.contains("V1.5.99.000"), "{err}");
     assert!(!out.exists());
 
     let mut other_model = base.clone();
     other_model.header.product = Some("PD985 U1".into());
-    let err = tpl::import(&other_model, &fx.like, &out, "test").unwrap_err().to_string();
+    let err = tpl::import(&other_model, &fx.like, &out, "test", &fx.layout).unwrap_err().to_string();
     assert!(err.contains("PD985 U1"), "{err}");
     assert!(!out.exists());
 }
@@ -238,9 +239,9 @@ fn missing_files_are_kept_from_the_reference() {
     let mut t = Template::read(&fx.templates[0]).unwrap();
     t.entries.retain(|e| e.name != "QEU_C_DContact");
     let out = temp("missing");
-    let report = tpl::import(&t, &fx.like, &out, "test").unwrap();
+    let report = tpl::import(&t, &fx.like, &out, "test", &fx.layout).unwrap();
     assert_eq!(report.kept_from_reference, vec![(8, "QEU_C_DContact".to_string())]);
-    let saved = load_read(&out).unwrap();
+    let saved = load_config_default(&out).unwrap();
     assert_eq!(saved.files[&8], fx.like.files[&8]);
     std::fs::remove_dir_all(&out).unwrap();
 }
@@ -271,7 +272,7 @@ fn workspace_export_includes_unsaved_edits_and_imports_back() {
 
     // Importing it for the same radio gives the edited configuration.
     let folder = temp("ws-import");
-    let (t, report) = tpl::import_file(&out, &fx.like, &folder).unwrap();
+    let (t, report) = tpl::import_file(&out, &fx.like, &folder, &fx.layout).unwrap();
     assert_eq!(t.header.name.as_deref(), Some("GUI test"));
     assert_eq!(report.from_template, fx.like.manifest.files.len());
     assert!(report.warnings.is_empty(), "{:?}", report.warnings);

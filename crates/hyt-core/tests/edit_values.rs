@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use hyt_core::edit::{apply_edits, changes, labelize};
-use hyt_core::{SavedRead, decode_read, load_read, plan_write, save_edited};
+use hyt_core::{SavedRead, decode_read, load_config_default, plan_write, save_config};
 use hytera_codeplug::container::{CrcCheck, check_crc};
 use hytera_codeplug::decode::{DecodedFile, decode};
 use hytera_codeplug::layout::Layout;
@@ -30,7 +30,7 @@ fn fixture() -> Option<Fx> {
         return None;
     }
     let rcdb = RcdbRoot::new(rcdb_dir);
-    let saved = load_read(&folder).ok()?;
+    let saved = load_config_default(&folder).ok()?;
     let layout = rcdb.layout(&saved.manifest.rcdb_version).ok()?;
     let options = Options::load(&options_path).ok()?;
     Some(Fx { saved, layout, options, rcdb })
@@ -105,8 +105,8 @@ fn edits_change_exactly_the_requested_fields() {
     // The saved folder is a valid source for `hyt write`.
     let out = std::env::temp_dir().join(format!("hyt-edit-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
-    save_edited(&fx.saved, &files, &out, "test").unwrap();
-    let reloaded = load_read(&out).unwrap();
+    save_config(&fx.saved, &files, &out, "test", &hyt_core::load_layout(&fx.saved, &fx.rcdb).unwrap()).unwrap();
+    let reloaded = load_config_default(&out).unwrap();
     assert_eq!(reloaded.manifest.serial_number, fx.saved.manifest.serial_number);
     let list = fx.rcdb.file_list(&reloaded.manifest.rcdb_version).unwrap();
     let links = fx.rcdb.table_links().unwrap();

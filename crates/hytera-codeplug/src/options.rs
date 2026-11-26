@@ -23,6 +23,38 @@ pub fn data_dir() -> Option<PathBuf> {
     Some(base.join("hyt").join("rcdb"))
 }
 
+/// Which exported data version (options, ui, models, visibility, links) to use for a radio with
+/// RCDB `version`: `version` itself when it was exported, else the newest version exported.
+///
+/// The exporters read CPS's parameter database, which holds a single (current) RCDB version
+/// (`DBVersion.is_current`); CPS V1.5.24 reads radios of older versions (e.g. V1.5.08.000) with that
+/// version's layout and this same database, keyed by parameter id (inferred). The layout still comes
+/// from the radio's own version, so fields the radio does not have never show.
+pub fn data_version(version: &str) -> String {
+    match data_dir() {
+        Some(dir) => data_version_in(&dir, version),
+        None => version.to_string(),
+    }
+}
+
+fn data_version_in(dir: &Path, version: &str) -> String {
+    if dir.join(version).join("options.json").is_file() {
+        return version.to_string();
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return version.to_string() };
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join("options.json").is_file())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .max_by_key(|v| version_key(v))
+        .unwrap_or_else(|| version.to_string())
+}
+
+/// `V1.5.24.000` → `[1, 5, 24, 0]` for ordering versions (non-numbers count as 0).
+fn version_key(v: &str) -> Vec<u32> {
+    v.trim_start_matches(|c: char| c.is_ascii_alphabetic()).split('.').map(|p| p.parse().unwrap_or(0)).collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
     pub raw: i64,
@@ -326,6 +358,21 @@ fn format_number(x: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_version_falls_back_to_newest_export() {
+        let dir = std::env::temp_dir().join(format!("hyt-data-version-{}", std::process::id()));
+        for v in ["V1.5.9.000", "V1.5.24.000", "V1.5.10.000", "notes"] {
+            std::fs::create_dir_all(dir.join(v)).unwrap();
+        }
+        for v in ["V1.5.9.000", "V1.5.24.000", "V1.5.10.000"] {
+            std::fs::write(dir.join(v).join("options.json"), "{}").unwrap();
+        }
+        assert_eq!(data_version_in(&dir, "V1.5.10.000"), "V1.5.10.000");
+        assert_eq!(data_version_in(&dir, "V1.5.08.000"), "V1.5.24.000");
+        assert_eq!(data_version_in(&dir.join("missing"), "V1.5.08.000"), "V1.5.08.000");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     const SAMPLE: &str = r#"{"rcdb_version":"V1.5.24.000","source":"test","params":[
         {"id":4,"name":"Power Level","unit":"","options":[

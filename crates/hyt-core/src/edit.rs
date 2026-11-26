@@ -208,7 +208,7 @@ fn file_id(saved: &SavedRead, name: &str) -> Option<u16> {
 
 /// CPS creates a new record in `QEU_C_X` by copying the record of `QEU_C_Template_X` when that
 /// file exists (observed for digital channels 2026-11-18); otherwise the RCDB defaults are used.
-fn template_record(saved: &SavedRead, name: &str, b: &Block) -> Option<Vec<u8>> {
+pub(crate) fn template_record(saved: &SavedRead, name: &str, b: &Block) -> Option<Vec<u8>> {
     let template_name = name.replacen("QEU_C_", "QEU_C_Template_", 1);
     if template_name == name {
         return None;

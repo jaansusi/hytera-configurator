@@ -5,6 +5,27 @@ Tick items off here (or delete them) as we go through them.
 
 ## Review
 
+- [x] **Older BP515 (R225105080, firmware V1.5.13, RCDB V1.5.08.000)** (2026-11-26): read, show, edit, CSV and
+  the GUI work with it (`captures/old-bp515-read_2026-11-26/`; it holds factory-like settings: `CH D1`, `CH A1`,
+  Zone 1, contact `Call 1`). Labels come from CPS's V1.5.24 data, as noted in the app. Writing needs the model *and*
+  its RCDB version verified (this closed a gap: before, `hyt write` only checked the model).
+  Done 2026-11-26: you recorded CPS reading and writing its unchanged configuration; `hyt` reproduces both byte for
+  byte, and a live `hyt write` of its unchanged configuration verified (`captures/old-bp515-write_2026-11-26/`).
+  It is now managed like the other BP515s (CLI and GUI). Left for you: try it in the GUI.
+
+- [ ] **Programming several radios** (2026-11-20; first live run done with the CLI on the second radio, see below): GUI **Program radios…**
+  (toolbar; works without a configuration open) or `hyt batch new <batch> --from <config> --first-id N --name
+  "Unit {n}" [--plan plan.csv]` then `hyt batch program <batch> --port COM3`. Each radio: read (backup) → its Radio
+  ID/name by plan, earlier attempt or rule → written and verified → logged in `<batch>/log.csv`. The radio keeps
+  its identity, never-written files, `Comm_Basic` radio data (serial, frequency range, licences, BT). A radio
+  already done is skipped unless you press "Program it again". Live 2026-11-20: second BP515 (R23N030201) became
+  Radio ID 2 "Radio 2" with radio 1's configuration, verified by a separate read
+  (`captures/second-radio_2026-11-20/`; its earlier configuration is in `read-before/` if you want it back). Still
+  to try: the GUI screen on a real radio. Open question 14 says what is inferred.
+  The single-radio `hyt copy` stays on the CLI; the GUI's "Copy to radio…" dialog was replaced by this screen.
+- [ ] **Radio IP now follows Radio ID** (all edits, incl. Quick setup's Radio ID), as CPS does. Before this,
+  changing Radio ID in `hyt` left Radio IP at 10.0.0.1.
+
 - [ ] **Try the app** (`cargo run -p hyt-gui -- captures/unattended_2026-11-19/start`, or the release build
   `target/release/hyt-gui.exe`). Screenshots of everything new are in `captures/gui-screens_2026-11-19/` and
   `captures/gui-screens_2026-11-19-night/`. Say what is confusing or missing.

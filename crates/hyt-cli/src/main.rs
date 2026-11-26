@@ -2,10 +2,12 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
+use hyt_core::batch::{Assignment, Batch, IdRule, Outcome, Rules, local_time, parse_plan};
+use hyt_core::copy::{CopyEvent, CopyJob, CopyOptions, CopyPlan, copy_to_radio, prepare_folder};
 use hyt_core::edit::{ADDED, Change, REMOVED, apply_edits, changes, labelize};
 use hyt_core::view::{Labeler, full_listing, summary};
 use hyt_core::write_flow::{WriteEvent, WriteJob, WriteSettings, write_config};
-use hyt_core::{decode_read, info_entries, load_layout, load_read, read_radio, save_edited, save_read};
+use hyt_core::{decode_read, info_entries, load_config, load_layout, read_radio, save_config, save_read};
 use hytera_codeplug::decode::DecodedFile;
 use hytera_codeplug::options::Options;
 use hytera_codeplug::rcdb::RcdbRoot;
@@ -125,6 +127,51 @@ enum Command {
         #[command(subcommand)]
         action: TplAction,
     },
+    /// Program several radios with one configuration, one after another: a batch folder holds a
+    /// frozen copy of the configuration, how radios get their Radio ID and name, and a log of
+    /// every radio. Start with `hyt batch new`, then `hyt batch program`.
+    Batch {
+        #[command(subcommand)]
+        action: BatchAction,
+    },
+    /// Put a configuration on another radio of the same model (programming several radios from
+    /// one configuration). Reads the radio once as its backup, keeps its identity, its
+    /// never-written files and radio data, and its own Radio ID and name unless --radio-id /
+    /// --alias are given (Radio IP follows Radio ID like in CPS), then writes and verifies. With
+    /// --like instead of --port only the folder for `hyt write` is made; nothing is sent.
+    Copy {
+        /// Configuration to copy (a folder saved by `hyt read`, `hyt apply` or the GUI).
+        #[arg(long)]
+        from: PathBuf,
+        /// Serial port of the radio to program (changes that radio).
+        #[arg(short, long, required_unless_present = "like", conflicts_with = "like")]
+        port: Option<String>,
+        /// Instead of a radio: a folder read from the target radio (`hyt read`); only --out is made.
+        #[arg(long)]
+        like: Option<PathBuf>,
+        /// New folder for the radio's backup, read before anything is written (with --port).
+        #[arg(long, required_unless_present = "like", conflicts_with = "like")]
+        backup: Option<PathBuf>,
+        /// New folder for the configuration made for this radio (what is written).
+        #[arg(short, long)]
+        out: PathBuf,
+        /// Give the radio this Radio ID (default: keep its own).
+        #[arg(long)]
+        radio_id: Option<String>,
+        /// Give the radio this name, Radio Alias (default: keep its own).
+        #[arg(long)]
+        alias: Option<String>,
+        /// Allow the radio to end up with the same Radio ID as the radio the configuration came from.
+        #[arg(long)]
+        allow_duplicate_id: bool,
+        /// Write even though writing has not been verified for this model yet.
+        #[arg(long)]
+        allow_unverified: bool,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
+        #[arg(long, env = "HYT_OPTIONS")]
+        options: Option<PathBuf>,
+    },
     /// Write a folder saved by `hyt read` back to the radio. Takes a fresh backup first, refuses a
     /// different radio, and reads back afterwards to verify.
     Write {
@@ -239,6 +286,67 @@ fn csv_command(action: CsvAction) -> Result<()> {
 }
 
 #[derive(Subcommand)]
+enum BatchAction {
+    /// Start a batch: copy the configuration into a new batch folder and set how radios get their
+    /// Radio ID and name. The rules are checked now. Nothing is sent to a radio.
+    New {
+        /// New folder for the batch.
+        folder: PathBuf,
+        /// The configuration to put on every radio (a folder saved by `hyt read`, `hyt apply` or
+        /// the GUI).
+        #[arg(long)]
+        from: PathBuf,
+        /// Give each radio the lowest free Radio ID from this one up. Default: radios keep their own.
+        #[arg(long)]
+        first_id: Option<u64>,
+        /// Name radios by this pattern: {n} = the radio's number in the batch, {id} = its Radio ID,
+        /// {serial} = its serial number (e.g. "Unit {n}"). Default: radios keep their own name.
+        #[arg(long)]
+        name: Option<String>,
+        /// CSV of planned Radio IDs and/or names by serial number (header: serial, radio id, name).
+        #[arg(long)]
+        plan: Option<PathBuf>,
+        /// Allow a radio to get the configuration's own Radio ID or one already given in the batch.
+        #[arg(long)]
+        allow_duplicate_id: bool,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
+        #[arg(long, env = "HYT_OPTIONS")]
+        options: Option<PathBuf>,
+    },
+    /// Program radios on one port, one after another: for each, wait for Enter, read it (its
+    /// backup), give it its Radio ID and name, write and verify, and log it. A radio already done
+    /// in this batch is skipped. Changes every radio programmed.
+    Program {
+        /// The batch folder (`hyt batch new`).
+        folder: PathBuf,
+        /// Serial port of the programming cable.
+        #[arg(short, long)]
+        port: String,
+        /// Program the radio connected now and stop, without asking.
+        #[arg(long)]
+        once: bool,
+        /// Also program radios already verified in this batch (they keep their Radio ID and name).
+        #[arg(long)]
+        again: bool,
+        /// Write even though writing has not been verified for this model yet.
+        #[arg(long)]
+        allow_unverified: bool,
+        #[arg(long, env = "HYT_RCDB")]
+        rcdb: Option<PathBuf>,
+        #[arg(long, env = "HYT_OPTIONS")]
+        options: Option<PathBuf>,
+    },
+    /// Show a batch: configuration, rules, what the next radio gets, and the log.
+    Status {
+        folder: PathBuf,
+        /// Print the batch file (JSON) instead.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum LicenceAction {
     /// Check a licence package from Hytera (.zip with readme .xml, .md5 and .fcr) the way CPS's
     /// Authorization button does: files, checksums, serial number and CPS V1.5.24's model rules.
@@ -290,7 +398,7 @@ fn licence_command(action: LicenceAction) -> Result<()> {
     match action {
         LicenceAction::Check { package, radio, json } => {
             let facts = match &radio {
-                Some(dir) => Some(RadioFacts::from_manifest(&load_read(dir)?.manifest)?),
+                Some(dir) => Some(RadioFacts::from_manifest(&load_config(dir, &rcdb_root(None))?.manifest)?),
                 None => None,
             };
             let report = check_package_file(&package, facts.as_ref())?;
@@ -334,7 +442,7 @@ fn licence_command(action: LicenceAction) -> Result<()> {
         }
         LicenceAction::Status { folder, port, replay, rcdb } => match folder {
             Some(dir) => {
-                let saved = load_read(&dir)?;
+                let saved = load_config(&dir, &rcdb_root(rcdb.clone()))?;
                 match installed_from_manifest(&saved.manifest) {
                     Some(l) => print_installed(&l),
                     None => println!("Installed licences: item 0x0200 not in this read's manifest"),
@@ -441,8 +549,10 @@ fn tpl_command(action: TplAction) -> Result<()> {
             }
         }
         TplAction::Import { file, like, out } => {
-            let reference = load_read(&like)?;
-            let (t, report) = tpl::import_file(&file, &reference, &out)?;
+            let rcdb = rcdb_root(None);
+            let reference = load_config(&like, &rcdb)?;
+            let layout = load_layout(&reference, &rcdb)?;
+            let (t, report) = tpl::import_file(&file, &reference, &out, &layout)?;
             let name = t.header.name.clone().unwrap_or_default();
             for w in &report.warnings {
                 println!("warning: {w}");
@@ -466,7 +576,7 @@ fn tpl_command(action: TplAction) -> Result<()> {
         TplAction::Export { folder, out, name, description, seqo_from, rcdb } => {
             let rcdb = rcdb_root(rcdb);
             let links = rcdb.table_links()?;
-            let saved = load_read(&folder)?;
+            let saved = load_config(&folder, &rcdb)?;
             let seqo = match seqo_from {
                 Some(p) => Some(tpl::Template::read(&p)?),
                 None => tpl::cps_template_for(&rcdb, &saved.manifest),
@@ -480,7 +590,7 @@ fn tpl_command(action: TplAction) -> Result<()> {
                 seqo_from: seqo.as_ref(),
                 when: tpl::now(),
             };
-            let (t, report) = tpl::export(&folder, &out, &links, opts)?;
+            let (t, report) = tpl::export(&folder, &out, &rcdb, &links, opts)?;
             for w in &report.warnings {
                 println!("warning: {w}");
             }
@@ -655,7 +765,7 @@ fn main() -> Result<()> {
             let result = read_radio(&mut session, &rcdb, |entry, bytes, _, _| {
                 println!("  read file {:>3} {:<28} {:>6} bytes", entry.id, entry.name, bytes.len());
             })?;
-            let manifest = save_read(&result, &out, &source_name)?;
+            let manifest = save_read(&result, &out, &source_name, &rcdb)?;
             let unknown_crc = manifest.files.iter().filter(|f| f.crc == "unknown").count();
             println!(
                 "Read {} files from {} (serial {}, RCDB {}) into {}. CRC rule unknown for {unknown_crc} files.",
@@ -667,8 +777,8 @@ fn main() -> Result<()> {
             );
         }
         Command::Apply { folder, edits, out, rcdb, options } => {
-            let saved = load_read(&folder)?;
             let rcdb = rcdb_root(rcdb);
+            let saved = load_config(&folder, &rcdb)?;
             let layout = load_layout(&saved, &rcdb)?;
             let links = rcdb.table_links()?;
             let options = load_options_for_read(options, &saved.manifest);
@@ -682,16 +792,22 @@ fn main() -> Result<()> {
             }
             let labels = Labeler { layout: &layout, options: options.as_ref() };
             print_changes(&changes, &labels);
-            save_edited(&saved, &files, &out, &format!("edited from {} with {}", folder.display(), edits.display()))?;
+            let source = format!("edited from {} with {}", folder.display(), edits.display());
+            save_config(&saved, &files, &out, &source, &layout)?;
             println!("Saved {} changes into {}. Check with `hyt show`, then `hyt write --from`.", changes.len(), out.display());
         }
         Command::Diff { before, after, rcdb, options } => {
-            let a = load_read(&before)?;
-            let b = load_read(&after)?;
+            let rcdb = rcdb_root(rcdb);
+            let a = load_config(&before, &rcdb)?;
+            let b = load_config(&after, &rcdb)?;
             if a.manifest.rcdb_version != b.manifest.rcdb_version {
-                bail!("the folders have different RCDB versions ({} vs {})", a.manifest.rcdb_version, b.manifest.rcdb_version);
+                bail!(
+                    "the folders use different RCDB layouts ({} vs {}); compare each with `hyt show`",
+                    a.manifest.rcdb_version,
+                    b.manifest.rcdb_version
+                );
             }
-            let layout = load_layout(&a, &rcdb_root(rcdb))?;
+            let layout = load_layout(&a, &rcdb)?;
             let options = load_options_for_read(options, &a.manifest);
             let (da, db) = (decode_read(&a, &layout)?, decode_read(&b, &layout)?);
             let mut all = Vec::new();
@@ -709,8 +825,9 @@ fn main() -> Result<()> {
             println!("{} settings differ.", all.len());
         }
         Command::Decode { folder, out, labels, rcdb, options } => {
-            let saved = load_read(&folder)?;
-            let layout = load_layout(&saved, &rcdb_root(rcdb))?;
+            let rcdb = rcdb_root(rcdb);
+            let saved = load_config(&folder, &rcdb)?;
+            let layout = load_layout(&saved, &rcdb)?;
             let mut decoded = decode_read(&saved, &layout)?;
             if labels {
                 match load_options_for_read(options, &saved.manifest) {
@@ -728,8 +845,9 @@ fn main() -> Result<()> {
             }
         }
         Command::Show { folder, all, rcdb, options } => {
-            let saved = load_read(&folder)?;
-            let layout = load_layout(&saved, &rcdb_root(rcdb))?;
+            let rcdb = rcdb_root(rcdb);
+            let saved = load_config(&folder, &rcdb)?;
+            let layout = load_layout(&saved, &rcdb)?;
             let decoded = decode_read(&saved, &layout)?;
             let options = load_options_for_read(options, &saved.manifest);
             let labels = Labeler { layout: &layout, options: options.as_ref() };
@@ -743,6 +861,16 @@ fn main() -> Result<()> {
         Command::Tpl { action } => tpl_command(action)?,
         Command::Csv { action } => csv_command(action)?,
         Command::Licence { action } => licence_command(action)?,
+        Command::Batch { action } => batch_command(action)?,
+        Command::Copy { from, port, like, backup, out, radio_id, alias, allow_duplicate_id, allow_unverified, rcdb, options } => {
+            let opts = CopyOptions { radio_id, alias, allow_duplicate_id, keep_config_identity: false };
+            let target = match (&port, &like, &backup) {
+                (Some(port), None, Some(backup)) => CopyTarget::Radio { port, backup },
+                (None, Some(like), None) => CopyTarget::Read(like),
+                _ => bail!("give --port and --backup, or --like"),
+            };
+            copy_command(&from, target, &out, &opts, &rcdb_root(rcdb), options.as_deref(), allow_unverified)?;
+        }
         Command::Write { port, from, backup, rcdb, allow_unverified } => {
             write_command(&port, &from, &backup, &rcdb_root(rcdb), allow_unverified)?;
         }
@@ -802,7 +930,7 @@ fn load_options_for_read(explicit: Option<PathBuf>, manifest: &hyt_core::ReadMan
 }
 
 fn write_command(port: &str, from: &Path, backup: &Path, rcdb: &RcdbRoot, allow_unverified: bool) -> Result<()> {
-    let saved = load_read(from)?;
+    let saved = load_config(from, rcdb)?;
     if backup.exists() {
         bail!("backup folder {} already exists; choose a new one", backup.display());
     }
@@ -814,6 +942,7 @@ fn write_command(port: &str, from: &Path, backup: &Path, rcdb: &RcdbRoot, allow_
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let settings = WriteSettings { allow_unverified, programming_date: Some(today), ..WriteSettings::default() };
     write_config(&mut session, rcdb, &job, &settings, |event| match event {
+        WriteEvent::Prepared { plan } if plan.other_radio() || plan.conversion.converted() => print_copy_plan(plan),
         WriteEvent::Writing { files, differing } => {
             println!("Writing {files} files ({differing} differ from the radio's current contents) ...")
         }
@@ -822,5 +951,235 @@ fn write_command(port: &str, from: &Path, backup: &Path, rcdb: &RcdbRoot, allow_
         WriteEvent::Verified { files } => println!("Verified: all {files} written files read back as written."),
         _ => {}
     })?;
+    Ok(())
+}
+
+enum CopyTarget<'a> {
+    Radio { port: &'a str, backup: &'a Path },
+    Read(&'a Path),
+}
+
+fn print_copy_plan(plan: &CopyPlan) {
+    let or = |v: &Option<String>| v.clone().unwrap_or_else(|| "?".into());
+    let change = |a: &Option<String>, b: &Option<String>| {
+        if a == b { format!("{} (kept)", or(a)) } else { format!("{} -> {}", or(a), or(b)) }
+    };
+    println!("Radio serial {}:", or(&plan.before.serial));
+    println!("  Radio ID     {}", change(&plan.before.radio_id, &plan.after.radio_id));
+    println!("  Radio name   {}", change(&plan.before.alias, &plan.after.alias));
+    if let Some(ip) = &plan.radio_ip {
+        println!("  Radio IP     {ip}");
+    }
+    println!(
+        "  configuration from radio {} (Radio ID {}, name {})",
+        or(&plan.source.serial),
+        or(&plan.source.radio_id),
+        or(&plan.source.alias)
+    );
+    println!("  {} settings differ from what this radio has", plan.changed_settings);
+    for k in &plan.kept {
+        println!("  kept from this radio: {k}");
+    }
+    if plan.shares_id_with_source() {
+        println!("  note: this radio has the same Radio ID as the radio the configuration came from; give one another ID");
+    }
+    for line in plan.conversion.lines() {
+        println!("  {line}");
+    }
+}
+
+fn copy_command(
+    from: &Path,
+    target: CopyTarget<'_>,
+    out: &Path,
+    opts: &CopyOptions,
+    rcdb: &RcdbRoot,
+    options: Option<&Path>,
+    allow_unverified: bool,
+) -> Result<()> {
+    let config = load_config(from, rcdb)?;
+    let source = from.display().to_string();
+    let (port, backup) = match target {
+        CopyTarget::Read(like) => {
+            let plan = prepare_folder(&config, &source, like, out, rcdb, options, opts)?;
+            print_copy_plan(&plan);
+            println!("Saved {}. Nothing was written; check it with `hyt diff`, then `hyt write --from` it.", out.display());
+            return Ok(());
+        }
+        CopyTarget::Radio { port, backup } => (port, backup),
+    };
+    let transport = hyt_core::open_port(port)?;
+    let mut session = Session::new(transport);
+    println!("Reading the radio into the backup {} ...", backup.display());
+    let job = CopyJob { config: &config, config_source: &source, backup, out, port, options_path: options };
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let settings = WriteSettings { allow_unverified, programming_date: Some(today), ..WriteSettings::default() };
+    let report = copy_to_radio(&mut session, rcdb, &job, opts, &settings, |event| match event {
+        CopyEvent::Prepared(plan) => {
+            print_copy_plan(plan);
+            println!("Saved the configuration for this radio in {}.", out.display());
+        }
+        CopyEvent::Step(WriteEvent::Writing { files, differing }) => {
+            println!("Writing {files} files ({differing} differ from the radio's current contents) ...")
+        }
+        CopyEvent::Step(WriteEvent::Wrote { entry, .. }) => println!("  wrote file {:>3} {}", entry.id, entry.name),
+        CopyEvent::Step(WriteEvent::WaitingForRestart) => {
+            println!("Waiting for the radio to restart, then reading back to verify ...")
+        }
+        CopyEvent::Step(WriteEvent::Verified { files }) => {
+            println!("Verified: all {files} written files read back as written.")
+        }
+        _ => {}
+    })?;
+    println!("Done. Backup of this radio before the copy: {}", report.write.backup.display());
+    Ok(())
+}
+
+fn print_batch_status(batch: &Batch) {
+    let f = &batch.file;
+    let c = &f.configuration;
+    println!("Batch {}", batch.folder.display());
+    println!(
+        "Configuration: {} (from {}), radio {} ID {} \"{}\"; {} RCDB {}",
+        batch.config_folder().display(),
+        f.configuration_source,
+        c.serial.as_deref().unwrap_or("?"),
+        c.radio_id.as_deref().unwrap_or("?"),
+        c.alias.as_deref().unwrap_or(""),
+        f.model.as_deref().unwrap_or("?"),
+        f.rcdb_version
+    );
+    for line in f.rules.describe() {
+        println!("  {line}");
+    }
+    let n = batch.counts();
+    println!(
+        "Radios done: {} ({} attempts: {} verified, {} skipped, {} not written, {} failed){}",
+        n.radios_done,
+        f.radios.len(),
+        n.verified,
+        n.skipped,
+        n.not_written,
+        n.failed,
+        if n.radios_failed > 0 { format!("; {} radios need writing again", n.radios_failed) } else { String::new() }
+    );
+    if !f.radios.is_empty() {
+        println!(
+            "{:>4}  {:<19}  {:<12} {:<11} {:<10} {:<16} {:<15}  message",
+            "no.", "time", "serial", "result", "Radio ID", "name", "Radio IP"
+        );
+        for e in &f.radios {
+            let a = e.after.as_ref().or(e.before.as_ref());
+            println!(
+                "{:>4}  {:<19}  {:<12} {:<11} {:<10} {:<16} {:<15}  {}",
+                e.number,
+                local_time(e.started_unix),
+                e.serial.as_deref().unwrap_or("-"),
+                e.outcome.text(),
+                a.and_then(|a| a.radio_id.as_deref()).unwrap_or("-"),
+                a.and_then(|a| a.alias.as_deref()).unwrap_or("-"),
+                e.radio_ip.as_deref().unwrap_or("-"),
+                e.message
+            );
+        }
+    }
+    match batch.assign(None, None) {
+        Ok(a) => println!("{}", next_radio_text(&a)),
+        Err(e) => println!("Next radio: {e:#}"),
+    }
+}
+
+fn next_radio_text(a: &Assignment) -> String {
+    format!(
+        "Next new radio gets Radio ID {} and name {} (radios in the plan get their planned values).",
+        a.radio_id.as_deref().unwrap_or("(its own)"),
+        a.name.as_deref().map_or("(its own)".to_string(), |n| format!("\"{n}\""))
+    )
+}
+
+fn batch_command(action: BatchAction) -> Result<()> {
+    match action {
+        BatchAction::New { folder, from, first_id, name, plan, allow_duplicate_id, rcdb, options } => {
+            let plan = match plan {
+                Some(p) => parse_plan(&std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?)
+                    .with_context(|| format!("plan {}", p.display()))?,
+                None => Vec::new(),
+            };
+            let radio_id = first_id.map_or(IdRule::Keep, |first| IdRule::Sequence { first });
+            let rules = Rules { radio_id, name, plan, allow_duplicate_id };
+            let batch = Batch::create(&folder, &from, rules, &rcdb_root(rcdb), options.as_deref())?;
+            print_batch_status(&batch);
+            println!("Program radios with `hyt batch program {} --port <port>`.", folder.display());
+        }
+        BatchAction::Status { folder, json } => {
+            let batch = Batch::open(&folder)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&batch.file)?);
+            } else {
+                print_batch_status(&batch);
+            }
+        }
+        BatchAction::Program { folder, port, once, again, allow_unverified, rcdb, options } => {
+            let rcdb = rcdb_root(rcdb);
+            let mut batch = Batch::open(&folder)?;
+            print_batch_status(&batch);
+            let stdin = std::io::stdin();
+            loop {
+                if !once {
+                    println!();
+                    println!("Connect the next radio (switched on) to {port} and press Enter; type q and Enter to stop.");
+                    let mut line = String::new();
+                    if stdin.read_line(&mut line)? == 0 || line.trim().eq_ignore_ascii_case("q") {
+                        break;
+                    }
+                }
+                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                let settings = WriteSettings { allow_unverified, programming_date: Some(today), ..WriteSettings::default() };
+                let transport = match hyt_core::open_port(&port) {
+                    Ok(t) => t,
+                    Err(e) if !once => {
+                        println!("{e:#}");
+                        continue;
+                    }
+                    Err(e) => return Err(e),
+                };
+                println!("Reading the radio ...");
+                let mut session = Session::new(transport);
+                let entry = batch.program(&mut session, &rcdb, &port, options.as_deref(), &settings, again, |event| match event {
+                    CopyEvent::Prepared(plan) => println!(
+                        "Radio {}: Radio ID {} -> {}, name \"{}\" -> \"{}\"; writing ...",
+                        plan.before.serial.as_deref().unwrap_or("?"),
+                        plan.before.radio_id.as_deref().unwrap_or("?"),
+                        plan.after.radio_id.as_deref().unwrap_or("?"),
+                        plan.before.alias.as_deref().unwrap_or(""),
+                        plan.after.alias.as_deref().unwrap_or("")
+                    ),
+                    CopyEvent::Step(WriteEvent::WaitingForRestart) => {
+                        println!("Waiting for the radio to restart, then reading back to verify ...")
+                    }
+                    _ => {}
+                })?;
+                println!(
+                    "#{} {} {}: {}",
+                    entry.number,
+                    entry.serial.as_deref().unwrap_or("(no radio)"),
+                    entry.outcome.text(),
+                    entry.message
+                );
+                if once {
+                    if matches!(entry.outcome, Outcome::Failed | Outcome::NotWritten) {
+                        bail!("the radio was not programmed (see above; logged in the batch)");
+                    }
+                    break;
+                }
+                match batch.assign(None, None) {
+                    Ok(a) => println!("{}", next_radio_text(&a)),
+                    Err(e) => println!("Next radio: {e:#}"),
+                }
+            }
+            let n = batch.counts();
+            println!("{} radios done in this batch; log in {}", n.radios_done, folder.join(hyt_core::batch::LOG_FILE).display());
+        }
+    }
     Ok(())
 }

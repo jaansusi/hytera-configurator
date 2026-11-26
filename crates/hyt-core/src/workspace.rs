@@ -19,7 +19,7 @@ use serde_json::{Map, Value};
 
 use crate::edit::{Change, Edited, apply_edits, def_for, is_text};
 use crate::view::{Labeler, is_secret};
-use crate::{ReadManifest, SavedRead, decode_read, load_options_for_read, load_read, save_edited};
+use crate::{ReadManifest, SavedRead, decode_read, load_config, load_options_for_read, save_config};
 
 /// Where one field value lives in the decoded files.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +69,51 @@ fn fields_at_mut<'a>(files: &'a mut [DecodedFile], at: &FieldRef) -> Option<&'a 
     match at.member {
         None => record.fields.as_mut().map(|f| &mut f.0),
         Some(m) => record.members.as_mut()?.get_mut(m).map(|f| &mut f.0),
+    }
+}
+
+/// CPS's Radio IP for `subnet` and `radio_id` (observed in CPS's code: `RadioIDRadioIPRule.JudgeRadioIP`
+/// in `G2CPS.ComplexRule.G2LinkRule.dll`, link type 2024): the address `subnet.id₂.id₁.id₀` (ID bytes
+/// most significant first) stored as a little-endian u32. `None` where CPS leaves Radio IP unchanged:
+/// subnet outside 1–126 or ID outside 1–16776415.
+pub fn radio_ip(subnet: i64, radio_id: i64) -> Option<i64> {
+    if !(1..=126).contains(&subnet) || !(1..=16_776_415).contains(&radio_id) {
+        return None;
+    }
+    Some(((radio_id & 0xFF) << 24) + ((radio_id & 0xFF00) << 8) + ((radio_id & 0xFF_0000) >> 8) + subnet)
+}
+
+/// The file holding Radio ID, Subnet and Radio IP.
+const CONFIG_FILE: &str = "QEU_C_Config";
+
+/// Position of the one single-record field `key` of the file named `file`, if there is exactly one.
+pub fn single_field(files: &[DecodedFile], file: &str, key: &str) -> Option<FieldRef> {
+    let f = files.iter().find(|f| f.name == file)?;
+    let mut found = f
+        .blocks
+        .iter()
+        .filter(|b| b.records.len() == 1 && b.records[0].fields.as_ref().is_some_and(|r| r.0.contains_key(key)));
+    let block = found.next()?;
+    found.next().is_none().then(|| FieldRef { file: f.id, block: block.id, record: 0, member: None, key: key.into() })
+}
+
+/// Keep Radio IP derived from Radio ID and Subnet as CPS does ([`radio_ip`]) when either differs
+/// from `base`; when both are as in `base`, Radio IP is too (an untouched configuration stays
+/// exactly as read, even where its Radio IP does not follow the rule). CPS does not let Radio IP
+/// be edited, so a direct edit of it does not survive.
+fn derive_radio_ip(base: &[DecodedFile], working: &mut [DecodedFile]) {
+    let get = |files: &[DecodedFile], key: &str| {
+        single_field(files, CONFIG_FILE, key).and_then(|at| value_at(files, &at)?.as_i64())
+    };
+    let (id, subnet) = (get(working, "Radio ID"), get(working, "Subnet"));
+    let ip = if (id, subnet) == (get(base, "Radio ID"), get(base, "Subnet")) {
+        get(base, "Radio IP")
+    } else {
+        id.zip(subnet).and_then(|(id, subnet)| radio_ip(subnet, id))
+    };
+    let Some(ip) = ip else { return };
+    if let Some(r) = single_field(working, CONFIG_FILE, "Radio IP").and_then(|at| fields_at_mut(working, &at).map(|r| (r, at))) {
+        r.0.insert(r.1.key, Value::from(ip));
     }
 }
 
@@ -222,8 +267,15 @@ impl Workspace {
     /// Open a folder saved by `hyt read` (or by [`Workspace::save_as`]), loading the layout from
     /// `rcdb` and the option catalogue from `options_path` or its default location.
     pub fn open(folder: &Path, rcdb: &RcdbRoot, options_path: Option<&Path>) -> Result<Self> {
-        let saved = load_read(folder)?;
-        let version = saved.manifest.rcdb_version.clone();
+        Self::from_saved(load_config(folder, rcdb)?, folder, rcdb, options_path)
+    }
+
+    /// [`Workspace::open`] for a configuration already in memory; `folder` is where it is said
+    /// to come from (used in messages and as the source of [`Workspace::save_as`]).
+    pub fn from_saved(saved: SavedRead, folder: &Path, rcdb: &RcdbRoot, options_path: Option<&Path>) -> Result<Self> {
+        // Exported CPS data (screens, link rules, visibility, model rules) may be another RCDB
+        // version's than the radio's layout ([`crate::data_version`]).
+        let version = crate::data_version(&saved.manifest.rcdb_version);
         let layout = crate::load_layout(&saved, rcdb)?;
         let links = rcdb.table_links().context("loading TableLink.xml")?;
         let (options, options_note, model_note) = match load_options_for_read(options_path, &saved.manifest) {
@@ -437,7 +489,9 @@ impl Workspace {
         self.set_raw(at, original)
     }
 
-    fn set_raw(&mut self, at: &FieldRef, value: Value) -> Result<()> {
+    /// Set a raw value without the checks of [`Workspace::set_value`] (still validated by
+    /// [`apply_edits`]).
+    pub(crate) fn set_raw(&mut self, at: &FieldRef, value: Value) -> Result<()> {
         self.update(|w| {
             let map = fields_at_mut(w, at).ok_or_else(|| anyhow!("no record at that position"))?;
             map.insert(at.key.clone(), value);
@@ -470,6 +524,7 @@ impl Workspace {
     fn update(&mut self, f: impl FnOnce(&mut Vec<DecodedFile>) -> Result<()>) -> Result<()> {
         let mut working = self.working.clone();
         f(&mut working)?;
+        derive_radio_ip(&self.base, &mut working);
         if working == self.working {
             return Ok(());
         }
@@ -701,12 +756,13 @@ impl Workspace {
         })
     }
 
-    /// Save the configuration including pending edits as the new folder `out` (same layout as
-    /// `hyt read`, keeping the radio identity), then continue editing from that folder.
+    /// Save the configuration including pending edits as the new configuration folder `out`
+    /// ([`crate::save_config`]), then continue editing from that folder.
     pub fn save_as(&mut self, out: &Path) -> Result<ReadManifest> {
         let source = format!("edited in hyt-gui from {}", self.folder.display());
-        let manifest = save_edited(&self.saved, self.files(), out, &source)?;
-        let saved = load_read(out)?;
+        let manifest = save_config(&self.saved, self.files(), out, &source, &self.layout)?;
+        let radio = Some(Box::new(self.saved.radio_read().clone()));
+        let saved = SavedRead { manifest: manifest.clone(), files: self.files().clone(), radio };
         let base = decode_read(&saved, &self.layout)?;
         self.folder = out.to_path_buf();
         self.saved = saved;

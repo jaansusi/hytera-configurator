@@ -1,6 +1,9 @@
 //! Operations shared by the `hyt` command-line tool and the GUI, usable from tests with any
 //! transport: read, save/load folders, decode, edit, write.
 
+pub mod batch;
+pub mod config;
+pub mod copy;
 pub mod edit;
 pub mod licence;
 pub mod link_rules;
@@ -60,7 +63,7 @@ pub fn item_label(id: u16) -> &'static str {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct InfoEntry {
     pub item: String,
     pub label: String,
@@ -83,7 +86,7 @@ pub fn info_entries(info: &RadioInfo) -> Vec<InfoEntry> {
         .collect()
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct FileRecord {
     pub id: u16,
     pub name: String,
@@ -94,7 +97,7 @@ pub struct FileRecord {
     pub crc: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ReadManifest {
     pub tool: String,
     pub created_unix: u64,
@@ -239,57 +242,182 @@ impl Drop for NewFolder {
     }
 }
 
-/// Save a read to `out` (`NNN_Name.bin` per file plus `manifest.json`). `out` must be new or empty;
-/// it appears only once everything is written.
-pub fn save_read(result: &ReadResult, out: &Path, source: &str) -> Result<ReadManifest> {
-    let folder = NewFolder::create(out)?;
-    let mut files = Vec::new();
-    for (entry, bytes) in &result.files {
-        let file = format!("{:03}_{}.bin", entry.id, sanitize(&entry.name));
-        write(&folder.file(&file), bytes)?;
-        let crc = match check_crc(bytes) {
-            CrcCheck::Body => "body-crc32",
-            CrcCheck::StaleTail { .. } => "body-crc32-before-stale-tail",
-            CrcCheck::Unknown => "unknown",
-        };
-        files.push(FileRecord {
-            id: entry.id,
-            name: entry.name.clone(),
-            file,
-            size: bytes.len(),
-            crc: crc.to_string(),
-        });
+/// A configuration folder's data file (see [`ConfigurationFile`]).
+pub const CONFIGURATION_FILE: &str = "configuration.json";
+/// A configuration folder's sub-folder with the untouched radio read it was made from
+/// (`manifest.json` plus `NNN_Name.bin` per file, as the radio sent them).
+pub const RADIO_DIR: &str = "radio";
+const CONFIGURATION_FORMAT: &str = "hyt-configuration";
+
+/// The data of a configuration: the value of every setting, as decoded with the layout of the
+/// radio it was read from. Writing rebuilds any radio's files from it ([`config::overlay`]), so it
+/// is not tied to the files of one radio or firmware.
+#[derive(Serialize, Deserialize)]
+pub struct ConfigurationFile {
+    pub format: String,
+    pub format_version: u32,
+    pub tool: String,
+    pub created_unix: u64,
+    /// How this configuration came about (read from a radio, edited, copied, …).
+    pub source: String,
+    /// The RCDB layout whose file, block and field names `files` uses.
+    pub layout: String,
+    /// The radio it was read from or made for (for reference; `radio/manifest.json` decides).
+    pub radio: RadioSummary,
+    pub files: Vec<DecodedFile>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RadioSummary {
+    pub model_name: Option<String>,
+    pub model_number: Option<String>,
+    pub serial_number: Option<String>,
+    pub firmware_version: Option<String>,
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn crc_rule(bytes: &[u8]) -> &'static str {
+    match check_crc(bytes) {
+        CrcCheck::Body => "body-crc32",
+        CrcCheck::StaleTail { .. } => "body-crc32-before-stale-tail",
+        CrcCheck::Unknown => "unknown",
     }
-    let manifest = ReadManifest {
-        tool: format!("hyt {}", env!("CARGO_PKG_VERSION")),
-        created_unix: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
-        source: source.to_string(),
-        profile: result.profile.key.to_string(),
-        model_name: result.info.model_name(),
-        serial_number: result.info.serial_number(),
-        firmware_version: result.info.firmware_version(),
-        rcdb_version: result.rcdb_version.clone(),
-        info: info_entries(&result.info),
-        files,
-    };
-    write(&folder.file("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+}
+
+impl SavedRead {
+    /// A radio read in memory, as [`save_read`] would save it.
+    pub fn from_result(result: &ReadResult, source: &str) -> SavedRead {
+        let files: Vec<FileRecord> = result
+            .files
+            .iter()
+            .map(|(entry, bytes)| FileRecord {
+                id: entry.id,
+                name: entry.name.clone(),
+                file: format!("{:03}_{}.bin", entry.id, sanitize(&entry.name)),
+                size: bytes.len(),
+                crc: crc_rule(bytes).to_string(),
+            })
+            .collect();
+        let manifest = ReadManifest {
+            tool: format!("hyt {}", env!("CARGO_PKG_VERSION")),
+            created_unix: now_unix(),
+            source: source.to_string(),
+            profile: result.profile.key.to_string(),
+            model_name: result.info.model_name(),
+            serial_number: result.info.serial_number(),
+            firmware_version: result.info.firmware_version(),
+            rcdb_version: result.rcdb_version.clone(),
+            info: info_entries(&result.info),
+            files,
+        };
+        let files = result.files.iter().map(|(e, b)| (e.id, b.clone())).collect();
+        SavedRead { manifest, files, radio: None }
+    }
+
+    /// The untouched radio read this configuration was made from (itself, for a read).
+    pub fn radio_read(&self) -> &SavedRead {
+        self.radio.as_deref().unwrap_or(self)
+    }
+}
+
+/// Write a radio read's files and `manifest.json` into `dir` (which exists).
+fn write_raw(dir: &Path, read: &SavedRead) -> Result<()> {
+    let mut manifest = read.manifest.clone();
+    for f in &mut manifest.files {
+        let bytes = read.files.get(&f.id).with_context(|| format!("file {} missing", f.id))?;
+        write(&dir.join(&f.file), bytes)?;
+        f.size = bytes.len();
+        f.crc = crc_rule(bytes).to_string();
+    }
+    write(&dir.join("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())
+}
+
+/// Save a radio read as a new configuration folder `out`: `radio/` with the files as read, and
+/// [`CONFIGURATION_FILE`] with their data. Without the layout for the radio's RCDB version only
+/// `radio/` is saved (it can still be opened and written back). `out` must be new or empty; it
+/// appears only once everything is written.
+pub fn save_read(result: &ReadResult, out: &Path, source: &str, rcdb: &RcdbRoot) -> Result<ReadManifest> {
+    let saved = SavedRead::from_result(result, source);
+    let folder = NewFolder::create(out)?;
+    let radio = folder.file(RADIO_DIR);
+    std::fs::create_dir_all(&radio).with_context(|| format!("creating {}", radio.display()))?;
+    write_raw(&radio, &saved)?;
+    match rcdb.layout(&saved.manifest.rcdb_version) {
+        Ok(layout) => write_configuration(&folder, &saved, &saved.files, source, &layout)?,
+        Err(e) => tracing::warn!("saving only the radio's files: no layout for RCDB {} ({e})", saved.manifest.rcdb_version),
+    }
     folder.finish()?;
-    Ok(manifest)
+    Ok(saved.manifest)
+}
+
+fn write_configuration(
+    folder: &NewFolder,
+    base: &SavedRead,
+    files: &BTreeMap<u16, Vec<u8>>,
+    source: &str,
+    layout: &Layout,
+) -> Result<()> {
+    let m = &base.manifest;
+    let decoded = m
+        .files
+        .iter()
+        .map(|f| {
+            let bytes = files.get(&f.id).with_context(|| format!("file {} missing", f.id))?;
+            decode(bytes, &f.name, layout).with_context(|| format!("decoding file {} ({})", f.id, f.name))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let config = ConfigurationFile {
+        format: CONFIGURATION_FORMAT.into(),
+        format_version: 1,
+        tool: format!("hyt {}", env!("CARGO_PKG_VERSION")),
+        created_unix: now_unix(),
+        source: source.to_string(),
+        layout: m.rcdb_version.clone(),
+        radio: RadioSummary {
+            model_name: m.model_name.clone(),
+            model_number: model_number(m).map(str::to_string),
+            serial_number: m.serial_number.clone(),
+            firmware_version: m.firmware_version.clone(),
+        },
+        files: decoded,
+    };
+    write(&folder.file(CONFIGURATION_FILE), serde_json::to_string_pretty(&config)?.as_bytes())
 }
 
 /// The option catalogue (CPS's labels, units and allowed values) for RCDB `version`, from
 /// `explicit` or [`Options::default_path`]. `Err` explains why none is available; callers then
 /// show raw values.
 pub fn load_options(explicit: Option<&Path>, version: &str) -> std::result::Result<Options, String> {
+    let data = data_version(version);
     let path = match explicit {
         Some(p) => p.to_path_buf(),
-        None => Options::default_path(version).ok_or("no per-user data folder (LOCALAPPDATA / XDG_DATA_HOME / HOME)")?,
+        None => Options::default_path(&data).ok_or("no per-user data folder (LOCALAPPDATA / XDG_DATA_HOME / HOME)")?,
     };
     match Options::load(&path) {
-        Ok(o) if o.rcdb_version == version => Ok(o),
+        Ok(o) if o.rcdb_version == version || o.rcdb_version == data => Ok(o),
         Ok(o) => Err(format!("{} is for RCDB {}, not {version}", path.display(), o.rcdb_version)),
         Err(e) => Err(format!("no option catalogue ({e}); run tools/export-rcdb-options.ps1")),
     }
+}
+
+/// The exported CPS data version (option catalogue, screens, model rules, visibility, link rules)
+/// used for a radio with RCDB `version`; see [`hytera_codeplug::options::data_version`].
+pub fn data_version(version: &str) -> String {
+    hytera_codeplug::options::data_version(version)
+}
+
+/// Why labels and rules come from another RCDB version than the radio's, when they do.
+pub fn data_version_note(version: &str) -> Option<String> {
+    let data = data_version(version);
+    (data != version).then(|| {
+        format!(
+            "this radio has RCDB {version}: its fields come from that layout, but names, value ranges and \
+             rules are CPS's for RCDB {data} (CPS has one parameter database for all versions)"
+        )
+    })
 }
 
 /// The radio's model number (info item 0x0000, e.g. `55P10B00-1L0BAPU1U1…`) saved with a read.
@@ -312,21 +440,35 @@ pub fn load_options_for_read(
 ) -> std::result::Result<(Options, Option<String>), String> {
     let version = &manifest.rcdb_version;
     let options = load_options(explicit, version)?;
+    let data = options.rcdb_version.clone();
+    let other_version = (data != *version).then(|| data_version_note(version)).flatten();
+    let with_version_note = |note: Option<String>| match (other_version.clone(), note) {
+        (Some(a), Some(b)) => Some(format!("{a}; {b}")),
+        (a, b) => a.or(b),
+    };
     let generic = |why: String| format!("{why}; using CPS's generic value ranges, not this model's");
     let Some(model) = model_number(manifest) else {
-        return Ok((options, Some(generic("the read has no model number (info item 0x0000)".into()))));
+        let note = generic("the read has no model number (info item 0x0000)".into());
+        return Ok((options, with_version_note(Some(note))));
     };
     let path = match explicit {
         Some(p) => Some(p.with_file_name("models.json")),
-        None => ModelRules::default_path(version),
+        None => ModelRules::default_path(&data),
     };
     let Some(path) = path else {
-        return Ok((options, Some(generic("no per-user data folder for the model-number rules".into()))));
+        let note = generic("no per-user data folder for the model-number rules".into());
+        return Ok((options, with_version_note(Some(note))));
     };
     match ModelRules::load(&path) {
-        Ok(rules) if rules.rcdb_version == *version => Ok((options.for_model(&rules, model), None)),
-        Ok(rules) => Ok((options, Some(generic(format!("{} is for RCDB {}", path.display(), rules.rcdb_version))))),
-        Err(e) => Ok((options, Some(generic(format!("no model-number rules ({e}); run tools/export-rcdb-options.ps1"))))),
+        Ok(rules) if rules.rcdb_version == data => Ok((options.for_model(&rules, model), with_version_note(None))),
+        Ok(rules) => {
+            let note = generic(format!("{} is for RCDB {}", path.display(), rules.rcdb_version));
+            Ok((options, with_version_note(Some(note))))
+        }
+        Err(e) => {
+            let note = generic(format!("no model-number rules ({e}); run tools/export-rcdb-options.ps1"));
+            Ok((options, with_version_note(Some(note))))
+        }
     }
 }
 
@@ -349,14 +491,25 @@ pub fn decode_read(saved: &SavedRead, layout: &Layout) -> Result<Vec<DecodedFile
         .collect()
 }
 
-/// A folder saved by [`save_read`]: its manifest and the file contents by ID.
+/// A configuration in memory, as the files of one radio layout: from a folder ([`load_config`]),
+/// a radio read ([`load_read`], [`SavedRead::from_result`]) or an edit. `manifest` says which radio
+/// and layout the files are for.
+#[derive(Clone)]
 pub struct SavedRead {
     pub manifest: ReadManifest,
     pub files: BTreeMap<u16, Vec<u8>>,
+    /// The radio read the configuration was made from, untouched (a configuration folder's `radio/`).
+    /// `None` when `files` are a read themselves (or come from a folder of an earlier hyt version).
+    pub radio: Option<Box<SavedRead>>,
 }
 
+/// Load a radio read saved as files (`manifest.json` plus `NNN_Name.bin`): a configuration
+/// folder's `radio/`, or a folder of an earlier hyt version. See [`load_config`] for folders.
 pub fn load_read(dir: &Path) -> Result<SavedRead> {
     let path = dir.join("manifest.json");
+    if !path.is_file() && dir.join(CONFIGURATION_FILE).is_file() {
+        bail!("{} is a configuration folder; open it with load_config", dir.display());
+    }
     let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let manifest: ReadManifest =
         serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
@@ -369,53 +522,117 @@ pub fn load_read(dir: &Path) -> Result<SavedRead> {
         }
         files.insert(f.id, bytes);
     }
-    Ok(SavedRead { manifest, files })
+    Ok(SavedRead { manifest, files, radio: None })
 }
 
-/// Save `files` (e.g. after [`edit::apply_edits`]) as a new folder in the same layout as
-/// [`save_read`], keeping the radio identity of `base` so `hyt write` accepts it for that radio.
-pub fn save_edited(base: &SavedRead, files: &BTreeMap<u16, Vec<u8>>, out: &Path, source: &str) -> Result<ReadManifest> {
-    save_with_extras(base, files, out, source, &[])
+/// Whether `dir` holds a configuration [`load_config`] can open.
+pub fn is_config_folder(dir: &Path) -> bool {
+    dir.join(CONFIGURATION_FILE).is_file()
+        || dir.join(RADIO_DIR).join("manifest.json").is_file()
+        || dir.join("manifest.json").is_file()
 }
 
-/// [`save_edited`] plus extra files (`name`, contents) written into the same new folder.
-fn save_with_extras(
+/// Open a configuration folder: its data ([`CONFIGURATION_FILE`]) made into the files of the radio
+/// read in its `radio/` (see [`config::overlay`]), in the form CPS writes them. Folders of earlier
+/// hyt versions (files only) open as they are.
+pub fn load_config(dir: &Path, rcdb: &RcdbRoot) -> Result<SavedRead> {
+    let path = dir.join(CONFIGURATION_FILE);
+    if !path.is_file() {
+        let radio = dir.join(RADIO_DIR);
+        return load_read(if radio.join("manifest.json").is_file() { &radio } else { dir });
+    }
+    let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let config: ConfigurationFile = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    if config.format != CONFIGURATION_FORMAT || config.format_version != 1 {
+        bail!("{}: not a hyt configuration of a known version", path.display());
+    }
+    let base = load_read(&dir.join(RADIO_DIR))?;
+    let base_layout = rcdb
+        .layout(&base.manifest.rcdb_version)
+        .with_context(|| format!("loading the field layout for RCDB {}", base.manifest.rcdb_version))?;
+    let config_layout = if config.layout == base_layout.version {
+        None
+    } else {
+        Some(rcdb.layout(&config.layout).with_context(|| format!("loading the field layout for RCDB {}", config.layout))?)
+    };
+    let made = config::overlay(&config.files, config_layout.as_ref().unwrap_or(&base_layout), &base, &base_layout, &[])
+        .with_context(|| format!("making {} into the files of {}", path.display(), dir.join(RADIO_DIR).display()))?;
+    if !made.report.is_exact() {
+        tracing::warn!("{}: {}", dir.display(), made.report.lines().join("; "));
+    }
+    // In the form CPS writes them (header CRC, no stale tail), like a template's files.
+    let files: BTreeMap<u16, Vec<u8>> = made
+        .files
+        .into_iter()
+        .map(|(id, bytes)| {
+            let prepared = prepare_for_write(&bytes).with_context(|| format!("file {id} is too short"))?;
+            Ok((id, prepared))
+        })
+        .collect::<Result<_>>()?;
+    let mut manifest = base.manifest.clone();
+    manifest.tool = config.tool;
+    manifest.created_unix = config.created_unix;
+    manifest.source = config.source;
+    for f in &mut manifest.files {
+        if let Some(bytes) = files.get(&f.id) {
+            f.size = bytes.len();
+            f.crc = crc_rule(bytes).to_string();
+        }
+    }
+    Ok(SavedRead { manifest, files, radio: Some(Box::new(base)) })
+}
+
+/// [`load_config`] with the RCDB data from `HYT_RCDB` or its default location (a CPS install or
+/// the per-user copy); for tools and tests without an `--rcdb` choice.
+pub fn load_config_default(dir: &Path) -> Result<SavedRead> {
+    let root = std::env::var_os("HYT_RCDB").map_or_else(hytera_codeplug::rcdb::default_root, PathBuf::from);
+    load_config(dir, &RcdbRoot::new(root))
+}
+
+/// Save `files` (the configuration `base` after edits, in `base`'s layout) as a new configuration
+/// folder `out`: [`CONFIGURATION_FILE`] with their data, and `radio/` with the radio read `base`
+/// was made from ([`SavedRead::radio_read`]). Returns the configuration's manifest.
+pub fn save_config(
     base: &SavedRead,
     files: &BTreeMap<u16, Vec<u8>>,
     out: &Path,
     source: &str,
+    layout: &Layout,
+) -> Result<ReadManifest> {
+    save_config_with_extras(base, files, out, source, layout, &[])
+}
+
+/// [`save_config`] plus extra files (`name`, contents) written into the same new folder.
+pub(crate) fn save_config_with_extras(
+    base: &SavedRead,
+    files: &BTreeMap<u16, Vec<u8>>,
+    out: &Path,
+    source: &str,
+    layout: &Layout,
     extras: &[(&str, Vec<u8>)],
 ) -> Result<ReadManifest> {
+    if layout.version != base.manifest.rcdb_version {
+        bail!("saving: the layout is RCDB {}, the configuration is for RCDB {}", layout.version, base.manifest.rcdb_version);
+    }
     let folder = NewFolder::create(out)?;
     for (name, bytes) in extras {
         write(&folder.file(name), bytes)?;
     }
-    let mut records = Vec::new();
-    for f in &base.manifest.files {
-        let bytes = files.get(&f.id).with_context(|| format!("file {} missing", f.id))?;
-        write(&folder.file(&f.file), bytes)?;
-        let crc = match check_crc(bytes) {
-            CrcCheck::Body => "body-crc32",
-            CrcCheck::StaleTail { .. } => "body-crc32-before-stale-tail",
-            CrcCheck::Unknown => "unknown",
-        };
-        records.push(FileRecord { id: f.id, name: f.name.clone(), file: f.file.clone(), size: bytes.len(), crc: crc.into() });
-    }
-    let m = &base.manifest;
-    let manifest = ReadManifest {
-        tool: format!("hyt {}", env!("CARGO_PKG_VERSION")),
-        created_unix: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
-        source: source.to_string(),
-        profile: m.profile.clone(),
-        model_name: m.model_name.clone(),
-        serial_number: m.serial_number.clone(),
-        firmware_version: m.firmware_version.clone(),
-        rcdb_version: m.rcdb_version.clone(),
-        info: serde_json::from_value(serde_json::to_value(&m.info)?)?,
-        files: records,
-    };
-    write(&folder.file("manifest.json"), serde_json::to_string_pretty(&manifest)?.as_bytes())?;
+    let radio = folder.file(RADIO_DIR);
+    std::fs::create_dir_all(&radio).with_context(|| format!("creating {}", radio.display()))?;
+    write_raw(&radio, base.radio_read())?;
+    write_configuration(&folder, base, files, source, layout)?;
     folder.finish()?;
+    let mut manifest = base.manifest.clone();
+    manifest.tool = format!("hyt {}", env!("CARGO_PKG_VERSION"));
+    manifest.created_unix = now_unix();
+    manifest.source = source.to_string();
+    for f in &mut manifest.files {
+        if let Some(bytes) = files.get(&f.id) {
+            f.size = bytes.len();
+            f.crc = crc_rule(bytes).to_string();
+        }
+    }
     Ok(manifest)
 }
 

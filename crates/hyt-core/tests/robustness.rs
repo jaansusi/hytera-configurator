@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use hyt_core::workspace::{FieldRef, Workspace};
 use hyt_core::write_flow::{WriteEvent, WriteJob, WriteSettings, write_config};
-use hyt_core::{SavedRead, load_read, read_radio, save_edited, sim_radio};
+use hyt_core::{SavedRead, load_config_default, read_radio, save_config, sim_radio};
 use hytera_codeplug::container::prepare_for_write;
 use hytera_codeplug::rcdb::{DEFAULT_CPS_DATA_DIR, RcdbRoot};
 use hytera_proto::Session;
@@ -30,7 +30,7 @@ fn fixture() -> Option<Fx> {
         eprintln!("skipping: captures or CPS RCDB data not present");
         return None;
     }
-    Some(Fx { rcdb: RcdbRoot::new(dir), saved: load_read(&folder).ok()?, folder })
+    Some(Fx { rcdb: RcdbRoot::new(dir), saved: load_config_default(&folder).ok()?, folder })
 }
 
 fn temp(name: &str) -> PathBuf {
@@ -59,7 +59,7 @@ fn edited(fx: &Fx, name: &str) -> SavedRead {
     ws.set_value(&at, "Sim Test 2").unwrap();
     let out = temp(name);
     ws.save_as(&out).unwrap();
-    load_read(&out).unwrap()
+    load_config_default(&out).unwrap()
 }
 
 fn write(fx: &Fx, radio: SimRadio, saved: &SavedRead, backup: &Path, settings: &WriteSettings) -> (anyhow::Result<usize>, SimRadio, Vec<String>) {
@@ -93,9 +93,9 @@ fn a_write_to_the_simulated_radio_is_verified_after_its_restart() {
     let basic = hytera_codeplug::decode::decode(&radio.files[&18], "Comm_Basic", &layout).unwrap();
     let stamped = basic.blocks.iter().flat_map(|b| &b.records).filter_map(|r| r.fields.as_ref()).find_map(|f| f.0.get("Programming Time").cloned());
     assert_eq!(stamped, Some(serde_json::json!("2030-01-02")));
-    assert_eq!(load_read(&saved_dir("ok-edit")).unwrap().files[&18], saved.files[&18]);
-    // The backup is the radio's configuration before the write.
-    assert_eq!(load_read(&backup).unwrap().files, fx.saved.files);
+    assert_eq!(load_config_default(&saved_dir("ok-edit")).unwrap().files[&18], saved.files[&18]);
+    // The backup is the radio's configuration before the write (in the form CPS writes).
+    assert_eq!(load_config_default(&backup).unwrap().files, written_form(&fx.saved.files));
     for d in [&backup, &saved_dir("ok-edit")] {
         std::fs::remove_dir_all(d).unwrap();
     }
@@ -134,7 +134,7 @@ fn a_cable_pulled_during_a_write_says_how_far_it_got() {
     assert!(n > 0 && n < 55, "{n} files written");
     assert!(text.contains(&format!("writing stopped after {n} of 55 files")), "{text}");
     assert!(text.contains(&backup.display().to_string()), "names the backup: {text}");
-    assert!(load_read(&backup).is_ok(), "the backup was saved before writing");
+    assert!(load_config_default(&backup).is_ok(), "the backup was saved before writing");
     for d in [&backup, &saved_dir("pulled-edit")] {
         std::fs::remove_dir_all(d).unwrap();
     }
@@ -178,14 +178,19 @@ fn saves_never_leave_half_written_folders() {
     let mut files: BTreeMap<u16, Vec<u8>> = fx.saved.files.clone();
     files.remove(&250);
     let out = temp("half").join("nested");
-    assert!(save_edited(&fx.saved, &files, &out, "test").is_err());
+    assert!(save_config(&fx.saved, &files, &out, "test", &hyt_core::load_layout(&fx.saved, &fx.rcdb).unwrap()).is_err());
     assert!(!out.exists());
     assert!(!out.with_file_name("nested.partial").exists());
     // A complete save lands under its name, also into an existing empty folder.
     std::fs::create_dir_all(&out).unwrap();
-    save_edited(&fx.saved, &fx.saved.files, &out, "test").unwrap();
-    assert_eq!(load_read(&out).unwrap().files, fx.saved.files);
+    save_config(&fx.saved, &fx.saved.files, &out, "test", &hyt_core::load_layout(&fx.saved, &fx.rcdb).unwrap()).unwrap();
+    assert_eq!(load_config_default(&out).unwrap().files, written_form(&fx.saved.files));
     assert!(!out.with_file_name("nested.partial").exists());
-    assert!(save_edited(&fx.saved, &fx.saved.files, &out, "test").is_err(), "non-empty folders are refused");
+    assert!(save_config(&fx.saved, &fx.saved.files, &out, "test", &hyt_core::load_layout(&fx.saved, &fx.rcdb).unwrap()).is_err(), "non-empty folders are refused");
     std::fs::remove_dir_all(out.parent().unwrap()).unwrap();
+}
+
+/// Files as a configuration folder gives them back: in the form CPS writes them.
+fn written_form(files: &BTreeMap<u16, Vec<u8>>) -> BTreeMap<u16, Vec<u8>> {
+    files.iter().map(|(id, b)| (*id, prepare_for_write(b).unwrap())).collect()
 }
